@@ -43,17 +43,28 @@ function uniqueStrings(values: string[]) {
 function buildNumericOptions(correct: number, max: number, rng: () => number) {
   const pool = new Set<number>([correct])
   const offsets = [-3, -2, -1, 1, 2, 3, 4]
-  while (pool.size < 4) {
+  
+  let attempts = 0
+  // First try to add realistic nearby values bounded by [0, max]
+  while (pool.size < 4 && attempts < 20) {
     const offset = offsets[Math.floor(rng() * offsets.length)]
     const value = Math.min(max, Math.max(0, correct + offset))
     pool.add(value)
-    if (pool.size >= max + 1) {
-      break
-    }
+    attempts++
   }
 
-  while (pool.size < 4) {
+  attempts = 0
+  // Then try to pad with other values bounded by [0, max]
+  while (pool.size < 4 && attempts < 20) {
     pool.add(Math.floor(rng() * (max + 1)))
+    attempts++
+  }
+
+  // If we still don't have 4 options because max is too small, just pad with valid numbers >= 0
+  let fallback = 0
+  while (pool.size < 4) {
+    pool.add(fallback)
+    fallback++
   }
 
   const options = shuffle([...pool].map(String), rng)

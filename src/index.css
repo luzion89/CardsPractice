@@ -1,94 +1,51 @@
-:root {
-  --paper: #1a1d2e;
-  --paper-2: #252840;
-  --table: #1b5e3b;
-  --table-deep: #134a2e;
-  --ink: #e8e4d9;
-  --ink-soft: #a09b8c;
-  --accent: #d4a843;
-  --accent-glow: rgba(212, 168, 67, 0.6);
-  --red: #e05252;
-  --green-bright: #4ebd7c;
-  --display-font: 'STKaiti', 'KaiTi', 'Kaiti SC', 'Noto Serif SC', serif;
-  --body-font: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap');
 
-  font: 16px/1.55 var(--body-font);
-  color: var(--ink);
-  background: var(--paper);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+:root {
+  --bg-color: #fdf6e3;
+  --panel-bg: #fff;
+  --table-bg: #a8e6cf;
+  --table-border: #16a085;
+  --ink: #2c3e50;
+  --ink-soft: #7f8c8d;
+  --accent: #f39c12;
+  --accent-light: rgba(243, 156, 18, 0.2);
+  --btn-primary: #3498db;
+  --btn-primary-shadow: #2980b9;
+  --btn-accent: #e74c3c;
+  --btn-accent-shadow: #c0392b;
+  --btn-ok: #2ecc71;
+  --border-thick: 3px solid var(--ink);
+  --border-thin: 2px solid var(--ink);
+  --shadow-brutal: 4px 6px 0px var(--ink);
+  --shadow-hover: 2px 3px 0px var(--ink);
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 8px;
+  
+  --display-font: 'Nunito', 'Microsoft Yahei', system-ui, sans-serif;
+  --body-font: 'Nunito', 'Microsoft Yahei', system-ui, sans-serif;
 }
 
 * {
   box-sizing: border-box;
 }
 
-html {
-  scroll-behavior: smooth;
-}
-
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(27, 94, 59, 0.25) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 100%, rgba(212, 168, 67, 0.08) 0%, transparent 40%),
-    linear-gradient(180deg, #0f1118 0%, #161928 40%, #1a1d2e 100%);
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 2px,
-      rgba(255, 255, 255, 0.008) 2px,
-      rgba(255, 255, 255, 0.008) 4px
-    );
-  opacity: 0.5;
-}
-
-body::after {
-  content: '';
-  position: fixed;
-  left: -6%;
-  right: -6%;
-  bottom: -8vh;
-  height: 28vh;
-  pointer-events: none;
-  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
-  background:
-    linear-gradient(180deg, rgba(90, 60, 20, 0.3), transparent 30%),
-    linear-gradient(180deg, #3d2510 0%, #2a1808 60%, #1a0f04 100%);
-  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.4);
+  font: 16px/1.55 var(--body-font);
+  color: var(--ink);
+  background-color: var(--bg-color);
+  background-image: repeating-linear-gradient(45deg, var(--accent-light) 25%, transparent 25%, transparent 75%, var(--accent-light) 75%, var(--accent-light)), repeating-linear-gradient(45deg, var(--accent-light) 25%, var(--bg-color) 25%, var(--bg-color) 75%, var(--accent-light) 75%, var(--accent-light));
+  background-position: 0 0, 20px 20px;
+  background-size: 40px 40px;
+  font-weight: 800;
 }
 
 #root {
   min-height: 100vh;
-  position: relative;
-  z-index: 1;
 }
 
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-a {
-  color: inherit;
-}
+h1, h2, h3, h4, p { margin: 0; }
+button, input { font: inherit; }
+button { cursor: pointer; }
