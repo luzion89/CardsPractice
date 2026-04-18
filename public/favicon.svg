@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+	<defs>
+		<linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+			<stop offset="0%" stop-color="#194e3d" />
+			<stop offset="100%" stop-color="#0d2e24" />
+		</linearGradient>
+		<linearGradient id="card" x1="0" x2="1" y1="0" y2="1">
+			<stop offset="0%" stop-color="#fffaf0" />
+			<stop offset="100%" stop-color="#eadcc0" />
+		</linearGradient>
+	</defs>
+	<rect width="256" height="256" rx="56" fill="url(#bg)" />
+	<circle cx="128" cy="128" r="88" fill="none" stroke="#d8ba7a" stroke-width="10" stroke-dasharray="8 14" />
+	<g transform="translate(72 54) rotate(-8 56 74)">
+		<rect x="16" y="24" width="96" height="132" rx="16" fill="#c69d4f" opacity="0.36" />
+		<rect width="96" height="132" rx="16" fill="url(#card)" />
+		<text x="18" y="34" font-size="24" font-family="Trebuchet MS, Microsoft YaHei, sans-serif" fill="#184b3a">A</text>
+		<text x="78" y="116" font-size="24" font-family="Trebuchet MS, Microsoft YaHei, sans-serif" fill="#184b3a">A</text>
+		<path d="M48 62c8-15 26-23 26-38 0-10-8-18-18-18-9 0-16 7-16 16 0 10 8 16 16 23 7 6 13 13 13 21 0 10-9 19-21 19-14 0-24-11-24-24h11c0 8 5 13 13 13 7 0 11-4 11-9 0-6-5-10-11-15-11-9-18-17-18-31 0-15 12-27 28-27 17 0 29 13 29 29 0 17-11 28-22 37-6 5-10 9-12 15h-5z" fill="#184b3a" />
+	</g>
+</svg>

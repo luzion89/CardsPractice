@@ -1,0 +1,19 @@
+{
+  "name": "掼蛋记牌实验室",
+  "short_name": "掼蛋实验室",
+  "description": "用于训练掼蛋记牌能力的渐进式 Web 应用。",
+  "lang": "zh-CN",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#f7f0e1",
+  "theme_color": "#103e30",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

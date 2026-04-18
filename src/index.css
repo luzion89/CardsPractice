@@ -1,0 +1,56 @@
+:root {
+  --paper: #f7f0e1;
+  --paper-2: #efe3cd;
+  --table: #103e30;
+  --table-deep: #0a2a21;
+  --ink: #1c2a22;
+  --ink-soft: #5e695d;
+  --accent: #155b45;
+
+  font: 16px/1.55 'Trebuchet MS', 'Avenir Next', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, rgba(203, 170, 113, 0.2), transparent 26%), radial-gradient(circle at top right, rgba(26, 84, 61, 0.22), transparent 26%), linear-gradient(180deg, #f6efd9 0%, #ecdfc5 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.8), transparent 80%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
