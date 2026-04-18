@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getChallengeForAdvance } from './lib/guandan/challenges'
 import {
   buildReplaySnapshot,
@@ -246,8 +246,9 @@ function App() {
   const [endedManually, setEndedManually] = useState(() => persisted?.endedManually ?? false)
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null)
   const [modal, setModal] = useState<ModalKind>('none')
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const snapshot = buildReplaySnapshot(game, stepIndex)
+  const snapshot = useMemo(() => buildReplaySnapshot(game, stepIndex), [game, stepIndex])
   const progress = game.actions.length === 0 ? 0 : Math.round((snapshot.stepIndex / game.actions.length) * 100)
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
   const isGameOver = snapshot.isComplete || endedManually
@@ -265,7 +266,7 @@ function App() {
     : snapshot.lastAction
       ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
       : '整局合法牌谱已预生成，按“下一步”开始回放。'
-  const ownHand = remainingHandForSeat(game, snapshot, SELF_SEAT)
+  const ownHand = useMemo(() => remainingHandForSeat(game, snapshot, SELF_SEAT), [game, snapshot])
 
   const currentTrickPlays: Partial<Record<Seat, PatternPlay | null>> = {}
   if (snapshot.currentTrick) {
@@ -279,9 +280,14 @@ function App() {
     .filter(([, count]) => count === 0)
     .map(([seat]) => seat)
 
+  const debouncedPersist = useCallback((state: PersistedState) => {
+    if (persistTimer.current) clearTimeout(persistTimer.current)
+    persistTimer.current = setTimeout(() => persist(state), 120)
+  }, [])
+
   useEffect(() => {
-    persist({ game, stepIndex: snapshot.stepIndex, difficulty, challengedTrickIndexes, stats, endedManually })
-  }, [challengedTrickIndexes, difficulty, endedManually, game, snapshot.stepIndex, stats])
+    debouncedPersist({ game, stepIndex: snapshot.stepIndex, difficulty, challengedTrickIndexes, stats, endedManually })
+  }, [challengedTrickIndexes, debouncedPersist, difficulty, endedManually, game, snapshot.stepIndex, stats])
 
   function handleNewGame() {
     startTransition(() => {
@@ -302,7 +308,7 @@ function App() {
 
   function handlePrevious() {
     if (activeChallenge || snapshot.stepIndex <= 0) return
-    setStepIndex((value) => Math.max(0, value - 1))
+    startTransition(() => setStepIndex((value) => Math.max(0, value - 1)))
   }
 
   function handleNext() {
@@ -317,22 +323,24 @@ function App() {
       challengedTrickIndexes,
     )
 
-    setStepIndex(nextStep)
+    startTransition(() => {
+      setStepIndex(nextStep)
 
-    if (plannedChallenge) {
-      setChallengedTrickIndexes((value) => [...value, plannedChallenge.trickIndex])
-      setActiveChallenge({
-        trickIndex: plannedChallenge.trickIndex,
-        question: plannedChallenge.question,
-        selectedIndex: null,
-        isCorrect: null,
-      })
-      return
-    }
+      if (plannedChallenge) {
+        setChallengedTrickIndexes((value) => [...value, plannedChallenge.trickIndex])
+        setActiveChallenge({
+          trickIndex: plannedChallenge.trickIndex,
+          question: plannedChallenge.question,
+          selectedIndex: null,
+          isCorrect: null,
+        })
+        return
+      }
 
-    if (nextStep >= game.actions.length) {
-      setModal('result')
-    }
+      if (nextStep >= game.actions.length) {
+        setModal('result')
+      }
+    })
   }
 
   function handleSelectAnswer(index: number) {

@@ -753,35 +753,96 @@ function buildRemainingCounts(hands: Record<Seat, Card[]>) {
   }
 }
 
-function scoreLead(play: PatternPlay, handSize: number, levelRank: number) {
+function estimateHandCount(hand: Card[], levelRank: number) {
+  // Greedy estimate: how many moves to empty the hand
+  // This counts natural groupings (pairs, triples, straights etc.)
+  const analysis = analyzeHand(hand, levelRank)
+  let remaining = hand.length
+  let moves = 0
+
+  // Count bombs (4+ of same rank) — these are efficient
+  for (const [, cards] of analysis.naturalByRank) {
+    if (cards.length >= 4) {
+      remaining -= cards.length
+      moves += 1
+    }
+  }
+
+  // Count triples (full houses use 5 cards in 1 move)
+  const triples: number[] = []
+  const pairs: number[] = []
+  const singles: number[] = []
+
+  for (const [rank, cards] of analysis.naturalByRank) {
+    if (cards.length >= 4) continue // already counted as bomb
+    if (cards.length === 3) triples.push(rank)
+    else if (cards.length === 2) pairs.push(rank)
+    else if (cards.length === 1) singles.push(rank)
+  }
+
+  // Pair triples with pairs for full houses
+  const fullHouses = Math.min(triples.length, pairs.length)
+  moves += fullHouses
+  remaining -= fullHouses * 5
+  const leftoverTriples = triples.length - fullHouses
+  moves += leftoverTriples
+  remaining -= leftoverTriples * 3
+  const leftoverPairs = pairs.length - fullHouses
+  moves += leftoverPairs
+  remaining -= leftoverPairs * 2
+  // Remaining singles + wilds
+  moves += Math.max(0, remaining)
+
+  return moves
+}
+
+function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
+  const handSize = hand.length
+  // Instant-win: play all remaining cards
   if (play.cards.length === handSize) {
-    return -999
+    return -9999
   }
 
-  let score = play.primaryValue * 0.8
-  score += play.wildCount * 6
-  score -= play.cards.length * 2.2
+  // Estimate how the hand looks after this play
+  const afterHand = hand.filter((c) => !play.cards.some((p) => p.id === c.id))
+  const afterMoves = estimateHandCount(afterHand, levelRank)
+  const currentMoves = estimateHandCount(hand, levelRank)
 
-  if (play.type === 'straight' || play.type === 'tube' || play.type === 'plate') {
-    score -= 24
-  }
-  if (play.type === 'fullHouse') {
-    score -= 18
-  }
-  if (play.type === 'triple') {
-    score -= 9
-  }
+  let score = 0
+
+  // Prefer plays that reduce move count efficiently
+  score += (currentMoves - afterMoves) * -30
+
+  // Prefer small-value leads to keep big cards for control
+  score += play.primaryValue * 1.5
+
+  // Penalize using wilds (save them)
+  score += play.wildCount * 12
+
+  // Prefer singles and pairs first (get rid of loose cards)
   if (play.type === 'single') {
-    score += 24
+    score -= 15
   }
   if (play.type === 'pair') {
-    score += 12
+    score -= 8
   }
+
+  // Penalize breaking combos (straights, tubes, plates)
+  if (play.type === 'straight' || play.type === 'tube' || play.type === 'plate') {
+    score -= 5
+  }
+  if (play.type === 'fullHouse') {
+    score -= 3
+  }
+
+  // Strongly preserve bombs for later
   if (isBombPattern(play)) {
-    score += handSize > 8 ? 70 : 24
+    score += handSize > 6 ? 80 : 15
   }
-  if (play.primaryValue >= powerValue(levelRank, levelRank)) {
-    score += handSize > 10 ? 8 : 2
+
+  // If hand is small, start playing aggressively
+  if (handSize <= 5) {
+    score -= play.cards.length * 6 // prefer multi-card plays to finish faster
   }
 
   return score
@@ -790,28 +851,89 @@ function scoreLead(play: PatternPlay, handSize: number, levelRank: number) {
 function scoreResponse(
   play: PatternPlay,
   current: PatternPlay,
-  handSize: number,
+  hand: Card[],
+  levelRank: number,
   enemyDanger: boolean,
   partnerClose: boolean,
+  teammateAhead: boolean,
 ) {
+  const handSize = hand.length
+  // Instant-win
   if (play.cards.length === handSize) {
-    return -999
+    return -9999
   }
 
-  let score = play.primaryValue
-  score += play.wildCount * 5
-  score += isBombPattern(play) ? (enemyDanger ? 18 : 64) : 0
-  score += canBeat(play, current) ? 0 : 1000
-  score += play.primaryValue - current.primaryValue
-  if (partnerClose) {
-    score -= isBombPattern(play) ? 14 : 8
+  let score = 0
+
+  // Base: prefer smaller plays to beat the current
+  score += play.primaryValue * 0.8
+
+  // Penalize using wilds
+  score += play.wildCount * 8
+
+  // If it's a bomb to beat non-bomb, heavy cost (save bombs)
+  if (isBombPattern(play) && !isBombPattern(current)) {
+    if (enemyDanger) {
+      score += 15 // worth it when enemy is close to finishing
+    } else if (partnerClose) {
+      score += 10 // help partner
+    } else {
+      score += 60 // expensive otherwise
+    }
   }
+
+  // Prefer the minimum card to beat
+  const overshoot = play.primaryValue - current.primaryValue
+  score += overshoot * 0.5
+
+  // If partner is close to finishing, be more aggressive about getting control
+  if (partnerClose && !teammateAhead) {
+    score -= 8
+  }
+
+  // If hand count improves after playing, it's worth it
+  const afterHand = hand.filter((c) => !play.cards.some((p) => p.id === c.id))
+  const movesBefore = estimateHandCount(hand, levelRank)
+  const movesAfter = estimateHandCount(afterHand, levelRank)
+  if (movesAfter < movesBefore) {
+    score -= (movesBefore - movesAfter) * 5
+  }
+
   return score
 }
 
-function chooseLeadPlay(hand: Card[], levelRank: number) {
+function chooseLeadPlay(
+  hand: Card[],
+  levelRank: number,
+  actor: Seat,
+  remainingCounts: Record<Seat, number>,
+) {
   const candidates = enumerateLeadPatterns(hand, levelRank)
-  return candidates.toSorted((left, right) => scoreLead(left, hand.length, levelRank) - scoreLead(right, hand.length, levelRank))[0]
+  if (candidates.length === 0) return undefined
+
+  const partnerSeat = partnerOf(actor)
+  const partnerClose = remainingCounts[partnerSeat] <= 4 && remainingCounts[partnerSeat] > 0
+
+  // If partner is close to finishing, try to lead small cards the partner can beat
+  // (feed partner small singles so they can play their remaining cards)
+  if (partnerClose) {
+    const smallSingles = candidates
+      .filter((p) => p.type === 'single' && p.primaryValue <= 10)
+      .toSorted((a, b) => a.primaryValue - b.primaryValue)
+    if (smallSingles.length > 0) {
+      return smallSingles[0]
+    }
+    const smallPairs = candidates
+      .filter((p) => p.type === 'pair' && p.primaryValue <= 10)
+      .toSorted((a, b) => a.primaryValue - b.primaryValue)
+    if (smallPairs.length > 0) {
+      return smallPairs[0]
+    }
+  }
+
+  return candidates.toSorted(
+    (left, right) => scoreLead(left, hand, levelRank) - scoreLead(right, hand, levelRank),
+  )[0]
 }
 
 function chooseResponsePlay(
@@ -837,25 +959,37 @@ function chooseResponsePlay(
   const chooseBest = (plays: PatternPlay[]) =>
     plays.toSorted(
       (left, right) =>
-        scoreResponse(left, current, hand.length, enemyDanger, partnerClose) -
-        scoreResponse(right, current, hand.length, enemyDanger, partnerClose),
+        scoreResponse(left, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead) -
+        scoreResponse(right, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead),
     )[0]
 
+  // Teammate is winning the trick — only play if we can finish
   if (teammateAhead) {
     const finishingPlay = candidates.find((pattern) => pattern.cards.length === hand.length)
     return finishingPlay ?? null
   }
 
+  // Try same-type plays first
   if (sameTypeCandidates.length > 0) {
     const bestSameType = chooseBest(sameTypeCandidates)
+    // Always play if: enemy is dangerous, we're close to finishing, or cost is low
     if (enemyDanger || partnerClose || hand.length <= 8 || bestSameType.cards.length >= 5) {
       return bestSameType
     }
-    if (bestSameType.primaryValue - current.primaryValue <= 2) {
+    // Play if the overshoot is small (don't waste big cards)
+    if (bestSameType.primaryValue - current.primaryValue <= 3) {
+      return bestSameType
+    }
+    // If hand count improves, worth it
+    const afterHand = hand.filter((c) => !bestSameType.cards.some((p) => p.id === c.id))
+    const movesBefore = estimateHandCount(hand, levelRank)
+    const movesAfter = estimateHandCount(afterHand, levelRank)
+    if (movesAfter < movesBefore) {
       return bestSameType
     }
   }
 
+  // Try bombs
   if (bombCandidates.length > 0) {
     const bestBomb = chooseBest(bombCandidates)
     if (enemyDanger || partnerClose || hand.length <= 6 || bestBomb.cards.length === hand.length) {
@@ -1051,7 +1185,13 @@ export function generateGame(seed = Date.now()) {
     }
 
     if (!trickState) {
-      const leadPlay = chooseLeadPlay(hands[currentSeat], levelRank)
+      const remainingCounts: Record<Seat, number> = {
+        south: hands.south.length,
+        east: hands.east.length,
+        north: hands.north.length,
+        west: hands.west.length,
+      }
+      const leadPlay = chooseLeadPlay(hands[currentSeat], levelRank, currentSeat, remainingCounts)
       if (!leadPlay) {
         break
       }
