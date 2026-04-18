@@ -19,7 +19,7 @@ import type {
   Seat,
   Suit,
 } from './lib/guandan/types'
-import { CardGroup } from './components/PlayingCard'
+import { CardGroup, PlayingCard } from './components/PlayingCard'
 import './App.css'
 
 type TrainingStats = {
@@ -124,6 +124,20 @@ function sortHandCards(cards: Card[], levelRank: number) {
   })
 }
 
+function groupHandCards(cards: Card[], levelRank: number) {
+  const groups: { rank: number; cards: Card[] }[] = []
+  for (const card of cards) {
+    const pv = powerValue(card.rank, levelRank)
+    const last = groups[groups.length - 1]
+    if (last && last.rank === pv) {
+      last.cards.push(card)
+    } else {
+      groups.push({ rank: pv, cards: [card] })
+    }
+  }
+  return groups
+}
+
 function remainingHandForSeat(game: GuandanGame, snapshot: ReplaySnapshot, seat: Seat) {
   const playedCardIds = new Set(
     snapshot.visibleActions
@@ -186,6 +200,36 @@ function TablePlaySlot({
   return (
     <div className={`table-play-slot ${position} ${play ? 'has-play' : 'is-pass'}`}>
       <PlayDisplay play={play} levelRank={levelRank} size={displaySize} />
+    </div>
+  )
+}
+
+function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
+  const groups = groupHandCards(cards, levelRank)
+  const stackOffset = 11
+  const baseHeight = 58
+
+  return (
+    <div className="hand-scroll">
+      <div className="hand-rack">
+        {groups.map((group) => (
+          <div
+            key={`${group.rank}-${group.cards[0].id}`}
+            className="hand-group"
+            style={{ height: baseHeight + (group.cards.length - 1) * stackOffset }}
+          >
+            {group.cards.map((card, index) => (
+              <div
+                key={card.id}
+                className="hand-card-shell"
+                style={{ top: index * stackOffset, zIndex: group.cards.length - index }}
+              >
+                <PlayingCard card={card} levelRank={levelRank} size="sm" />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -318,7 +362,7 @@ function App() {
             <strong className="app-title">掼蛋记牌台</strong>
             <span className="difficulty-chip">{DIFFICULTY_META[difficulty].label}</span>
           </div>
-          <p className="title-copy">保留真实牌桌视角：桌中只看出牌，自己的手牌常驻底部，挑战与统计退到边缘和弹窗。</p>
+
         </div>
         <div className="toolbar-block">
           <div className="top-right">
@@ -339,10 +383,6 @@ function App() {
 
       <section className="table-scene">
         <div className="scene-head">
-          <div className="scene-copy">
-            <span className="scene-title">回放牌桌</span>
-            <p>{isGameOver ? '牌局已结束，可以回看最近轮次或直接开新局。' : '四家座位改为自己 / 上家 / 下家 / 对家，牌桌中心只保留真正的出牌位置。'}</p>
-          </div>
           <div className="scene-pills">
             <span className="tag">{roundLabel}</span>
             <span className="tag">{pressureSeat ? `${SEAT_LABELS[pressureSeat]}掌牌` : '等待领牌'}</span>
@@ -389,19 +429,11 @@ function App() {
 
         <section className="hand-panel">
           <div className="hand-head">
-            <div>
-              <span className="hand-kicker">自己的视角</span>
-              <h3 className="hand-title">我的本局手牌</h3>
-              <p className="hand-copy">
-                {ownHand.length > 0 ? '这排手牌会随回放实时扣除已打出的牌，方便你一边看桌面一边对照记牌。' : '这一局里，你的 27 张牌已经全部打完。'}
-              </p>
-            </div>
+            <h3>我的本局手牌</h3>
             <span className="hand-count">{ownHand.length}/{game.players[SELF_SEAT].length} 张</span>
           </div>
           {ownHand.length > 0 ? (
-            <div className="hand-scroll">
-              <CardGroup cards={ownHand} levelRank={game.levelRank} size="md" />
-            </div>
+            <HandRack cards={ownHand} levelRank={game.levelRank} />
           ) : (
             <p className="hand-empty">当前自己已经出完所有牌，可以直接看战报或重新开一局。</p>
           )}

@@ -17,11 +17,12 @@
 .app-root {
   max-width: 1240px;
   margin: 0 auto;
-  padding: 20px 18px 30px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 100dvh;
+  padding: 14px 18px 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .app-root > * {
@@ -150,9 +151,10 @@
 }
 
 .table-scene {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  min-height: 0;
 }
 
 .scene-head {
@@ -187,12 +189,14 @@
 
 .table-stage {
   position: relative;
-  padding: 78px 116px 116px;
+  height: 100%;
+  padding: 52px 90px 78px;
 }
 
 .table-felt {
   position: relative;
-  min-height: 610px;
+  height: 100%;
+  min-height: clamp(290px, 40dvh, 420px);
   border-radius: 42px;
   color: #fbf3e3;
   background:
@@ -252,7 +256,7 @@
   display: grid;
   gap: 4px;
   justify-items: center;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-radius: 22px;
   background: rgba(255, 251, 242, 0.92);
   border: 1px solid rgba(23, 48, 39, 0.1);
@@ -419,7 +423,7 @@
 }
 
 .progress-container {
-  height: 10px;
+  height: 8px;
   border-radius: 999px;
   background: rgba(20, 48, 39, 0.12);
   overflow: hidden;
@@ -434,7 +438,7 @@
 }
 
 .hand-panel {
-  padding: 18px 20px;
+  padding: 12px 16px;
   border-radius: 26px;
   border: 1px solid rgba(23, 48, 39, 0.1);
   background: linear-gradient(180deg, rgba(255, 252, 245, 0.92), rgba(244, 236, 220, 0.9));
@@ -444,28 +448,15 @@
 .hand-head {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  align-items: start;
+  gap: 10px;
+  align-items: center;
 }
 
-.hand-kicker {
-  display: block;
-  font-size: 0.74rem;
-  color: #6b735f;
-}
-
-.hand-title {
-  margin: 4px 0 0;
+.hand-head h3 {
+  margin: 0;
   font-family: var(--display-font);
-  font-size: 1.55rem;
+  font-size: 1.2rem;
   color: #173027;
-}
-
-.hand-copy {
-  margin: 6px 0 0;
-  max-width: 58ch;
-  color: var(--ink-soft);
-  font-size: 0.94rem;
 }
 
 .hand-count {
@@ -477,9 +468,26 @@
 }
 
 .hand-scroll {
-  margin-top: 12px;
+  margin-top: 8px;
   overflow-x: auto;
-  padding: 8px 2px 4px;
+  padding: 4px 2px 4px;
+}
+
+.hand-rack {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: 10px;
+}
+
+.hand-group {
+  position: relative;
+  width: 40px;
+  flex-shrink: 0;
+}
+
+.hand-card-shell {
+  position: absolute;
+  left: 0;
 }
 
 .hand-scroll::-webkit-scrollbar {
@@ -881,11 +889,11 @@
 
 @media (max-width: 1080px) {
   .table-stage {
-    padding: 72px 88px 104px;
+    padding: 52px 72px 78px;
   }
 
   .table-felt {
-    min-height: 560px;
+    min-height: clamp(260px, 36dvh, 380px);
   }
 
   .control-dock {
@@ -898,6 +906,12 @@
 }
 
 @media (max-width: 780px) {
+  .app-root {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
   .top-bar {
     grid-template-columns: 1fr;
   }
@@ -920,7 +934,7 @@
   }
 
   .table-felt {
-    min-height: 460px;
+    min-height: clamp(280px, 38dvh, 400px);
     border-radius: 34px;
   }
 
@@ -967,7 +981,7 @@
   }
 
   .table-felt {
-    min-height: 360px;
+    min-height: clamp(240px, 34dvh, 340px);
     border-radius: 28px;
   }
 
