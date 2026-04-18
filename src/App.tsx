@@ -206,8 +206,8 @@ function TablePlaySlot({
 
 function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
   const groups = groupHandCards(cards, levelRank)
-  const stackOffset = 11
-  const baseHeight = 58
+  const stackOffset = 13
+  const baseHeight = 78
 
   return (
     <div className="hand-scroll">
@@ -222,9 +222,9 @@ function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
               <div
                 key={card.id}
                 className="hand-card-shell"
-                style={{ top: index * stackOffset, zIndex: group.cards.length - index }}
+                style={{ top: index * stackOffset, zIndex: index + 1 }}
               >
-                <PlayingCard card={card} levelRank={levelRank} size="sm" />
+                <PlayingCard card={card} levelRank={levelRank} size="md" />
               </div>
             ))}
           </div>
@@ -250,6 +250,9 @@ function App() {
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
   const isGameOver = snapshot.isComplete || endedManually
   const pressureSeat = snapshot.currentTrick?.winningSeat ?? snapshot.currentTrick?.leader ?? snapshot.nextSeat ?? null
+  const allyRemaining = snapshot.remainingCounts.south + snapshot.remainingCounts.north
+  const rivalRemaining = snapshot.remainingCounts.west + snapshot.remainingCounts.east
+  const seedLabel = game.seed.toString(36).slice(-6)
   const roundLabel = snapshot.currentTrick
     ? `第 ${snapshot.currentTrick.index + 1} 轮`
     : snapshot.completedTricks.length > 0
@@ -356,13 +359,35 @@ function App() {
   return (
     <div className="app-root">
       <header className="top-bar">
-        <div className="title-block">
-          <span className="kicker">MEMORY TABLE</span>
-          <div className="title-row">
-            <strong className="app-title">掼蛋记牌台</strong>
-            <span className="difficulty-chip">{DIFFICULTY_META[difficulty].label}</span>
+        <div className="hud-cluster">
+          <div className="scoreboard">
+            <div className="score-card ally">
+              <span className="score-label">我方</span>
+              <strong className="score-value">{allyRemaining}</strong>
+            </div>
+            <div className="score-card rival">
+              <span className="score-label">对方</span>
+              <strong className="score-value">{rivalRemaining}</strong>
+            </div>
+            <div className="score-card round">
+              <span className="score-label">轮次</span>
+              <strong className="score-value">{snapshot.completedTricks.length + (snapshot.currentTrick ? 1 : 0)}</strong>
+            </div>
           </div>
 
+          <div className="title-block">
+            <span className="kicker">MEMORY TABLE</span>
+            <div className="title-row">
+              <strong className="app-title">掼蛋记牌台</strong>
+              <span className="difficulty-chip">{DIFFICULTY_META[difficulty].label}</span>
+            </div>
+            <div className="title-meta">
+              <span className="tag">{roundLabel}</span>
+              <span className="tag">{pressureSeat ? `${SEAT_LABELS[pressureSeat]}掌牌` : '等待领牌'}</span>
+              <span className="tag">{SEAT_LABELS[game.startingSeat]}起手</span>
+              <span className="tag">#{seedLabel}</span>
+            </div>
+          </div>
         </div>
         <div className="toolbar-block">
           <div className="top-right">
@@ -382,15 +407,6 @@ function App() {
       </header>
 
       <section className="table-scene">
-        <div className="scene-head">
-          <div className="scene-pills">
-            <span className="tag">{roundLabel}</span>
-            <span className="tag">{pressureSeat ? `${SEAT_LABELS[pressureSeat]}掌牌` : '等待领牌'}</span>
-            <span className="tag">{SEAT_LABELS[game.startingSeat]}起手</span>
-            <span className="tag">#{game.seed.toString(36).slice(-6)}</span>
-          </div>
-        </div>
-
         <div className="table-stage">
           {TABLE_SEATS.map((seat) => (
             <SeatBadge
@@ -406,6 +422,15 @@ function App() {
           <div className="table-felt">
             <span className="table-level-badge">级牌 {rankToText(game.levelRank)}</span>
             <div className="table-orbit" />
+            <div className="table-watermark" aria-hidden="true">
+              <span className="table-watermark-kicker">回放牌桌</span>
+              <strong className="table-watermark-title">掼蛋记牌训练</strong>
+              <span className="table-watermark-copy">完整牌局回放 · 手游式视角</span>
+            </div>
+            <div className="table-turn-chip">
+              <span>当前节奏</span>
+              <strong>{pressureSeat ? SEAT_LABELS[pressureSeat] : '待开局'}</strong>
+            </div>
             {TABLE_SEATS.map((seat) => (
               <TablePlaySlot
                 key={`${seat}-play`}

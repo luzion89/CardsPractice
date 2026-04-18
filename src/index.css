@@ -1,11 +1,11 @@
 :root {
-  --paper: #f7f0e1;
-  --paper-2: #efe3cd;
-  --table: #103e30;
-  --table-deep: #0a2a21;
-  --ink: #1c2a22;
-  --ink-soft: #5e695d;
-  --accent: #155b45;
+  --paper: #dfe6ff;
+  --paper-2: #cfd8fb;
+  --table: #657ad8;
+  --table-deep: #4f62b8;
+  --ink: #20284c;
+  --ink-soft: #677197;
+  --accent: #5873db;
   --display-font: 'STKaiti', 'KaiTi', 'Kaiti SC', 'Noto Serif SC', serif;
   --body-font: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', sans-serif;
 
@@ -30,9 +30,10 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(203, 170, 113, 0.22), transparent 26%),
-    radial-gradient(circle at top right, rgba(26, 84, 61, 0.2), transparent 24%),
-    linear-gradient(180deg, #f7f0dd 0%, #e7d7b7 100%);
+    radial-gradient(circle at 50% 12%, rgba(255, 255, 255, 0.34), transparent 18%),
+    radial-gradient(circle at top left, rgba(153, 177, 255, 0.36), transparent 24%),
+    radial-gradient(circle at top right, rgba(104, 129, 238, 0.28), transparent 22%),
+    linear-gradient(180deg, #91a4ef 0%, #7d90de 36%, #6577c9 100%);
 }
 
 body::before {
@@ -41,14 +42,32 @@ body::before {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 24px 24px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.8), transparent 80%);
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.4;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent 74%);
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  left: -6%;
+  right: -6%;
+  bottom: -10vh;
+  height: 34vh;
+  pointer-events: none;
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+  background:
+    linear-gradient(180deg, rgba(255, 226, 184, 0.2), transparent 18%),
+    linear-gradient(180deg, #885a34 0%, #714623 46%, #4f2f1d 100%);
+  box-shadow: 0 -10px 26px rgba(65, 38, 20, 0.18);
 }
 
 #root {
   min-height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
 h1,
