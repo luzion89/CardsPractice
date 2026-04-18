@@ -61,18 +61,18 @@ export const PARTNERS: Record<Seat, Seat> = {
 export const DIFFICULTY_META: Record<Difficulty, DifficultyMeta> = {
   starter: {
     label: '入门',
-    challengeChance: 0.22,
-    summary: '以记住上一轮谁出了什么牌型为主。',
+    reviewDepth: 1,
+    summary: '每轮必答；A、K、王或级牌出现后优先追问剩余张数。',
   },
   standard: {
     label: '基础',
-    challengeChance: 0.3,
-    summary: '开始追踪 A、级牌、大小王和逢人配的剩余数量。',
+    reviewDepth: 2,
+    summary: '每轮必答，轮换上一轮回忆、大牌计数与最近两轮回忆。',
   },
   expert: {
     label: '进阶',
-    challengeChance: 0.38,
-    summary: '要求复述最近三轮内容，并回答任意点数牌的剩余张数。',
+    reviewDepth: 4,
+    summary: '每轮必答，混合延迟回忆、全局计数与搭档局势判断。',
   },
 }
 
@@ -787,7 +787,13 @@ function scoreLead(play: PatternPlay, handSize: number, levelRank: number) {
   return score
 }
 
-function scoreResponse(play: PatternPlay, current: PatternPlay, handSize: number, enemyDanger: boolean) {
+function scoreResponse(
+  play: PatternPlay,
+  current: PatternPlay,
+  handSize: number,
+  enemyDanger: boolean,
+  partnerClose: boolean,
+) {
   if (play.cards.length === handSize) {
     return -999
   }
@@ -797,6 +803,9 @@ function scoreResponse(play: PatternPlay, current: PatternPlay, handSize: number
   score += isBombPattern(play) ? (enemyDanger ? 18 : 64) : 0
   score += canBeat(play, current) ? 0 : 1000
   score += play.primaryValue - current.primaryValue
+  if (partnerClose) {
+    score -= isBombPattern(play) ? 14 : 8
+  }
   return score
 }
 
@@ -820,12 +829,17 @@ function chooseResponsePlay(
 
   const teammateAhead = partnerOf(actor) === winningSeat
   const enemyDanger = remainingCounts[winningSeat] <= 5
+  const partnerClose = remainingCounts[partnerOf(actor)] <= 3
 
   const sameTypeCandidates = candidates.filter((pattern) => !isBombPattern(pattern))
   const bombCandidates = candidates.filter((pattern) => isBombPattern(pattern))
 
   const chooseBest = (plays: PatternPlay[]) =>
-    plays.toSorted((left, right) => scoreResponse(left, current, hand.length, enemyDanger) - scoreResponse(right, current, hand.length, enemyDanger))[0]
+    plays.toSorted(
+      (left, right) =>
+        scoreResponse(left, current, hand.length, enemyDanger, partnerClose) -
+        scoreResponse(right, current, hand.length, enemyDanger, partnerClose),
+    )[0]
 
   if (teammateAhead) {
     const finishingPlay = candidates.find((pattern) => pattern.cards.length === hand.length)
@@ -834,7 +848,7 @@ function chooseResponsePlay(
 
   if (sameTypeCandidates.length > 0) {
     const bestSameType = chooseBest(sameTypeCandidates)
-    if (enemyDanger || hand.length <= 8 || bestSameType.cards.length >= 5) {
+    if (enemyDanger || partnerClose || hand.length <= 8 || bestSameType.cards.length >= 5) {
       return bestSameType
     }
     if (bestSameType.primaryValue - current.primaryValue <= 2) {
@@ -844,7 +858,7 @@ function chooseResponsePlay(
 
   if (bombCandidates.length > 0) {
     const bestBomb = chooseBest(bombCandidates)
-    if (enemyDanger || hand.length <= 6 || bestBomb.cards.length === hand.length) {
+    if (enemyDanger || partnerClose || hand.length <= 6 || bestBomb.cards.length === hand.length) {
       return bestBomb
     }
   }

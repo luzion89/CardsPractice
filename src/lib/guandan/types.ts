@@ -109,6 +109,6 @@ export interface ChallengeQuestion {
 
 export interface DifficultyMeta {
   label: string
-  challengeChance: number
+  reviewDepth: number
   summary: string
 }

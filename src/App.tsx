@@ -1,5 +1,5 @@
-import { startTransition, useState } from 'react'
-import { createChallenge, shouldTriggerChallenge } from './lib/guandan/challenges'
+import { startTransition, useEffect, useState } from 'react'
+import { getChallengeForAdvance } from './lib/guandan/challenges'
 import {
   buildReplaySnapshot,
   DIFFICULTY_META,
@@ -20,7 +20,7 @@ type TrainingStats = {
 }
 
 type ActiveChallenge = {
-  pendingStep: number
+  trickIndex: number
   question: ChallengeQuestion
   selectedIndex: number | null
   isCorrect: boolean | null
@@ -30,7 +30,7 @@ type PersistedState = {
   game: GuandanGame
   stepIndex: number
   difficulty: Difficulty
-  checkedForwardSteps: number[]
+  challengedTrickIndexes: number[]
   stats: TrainingStats
   endedManually: boolean
 }
@@ -38,6 +38,26 @@ type PersistedState = {
 type ModalKind = 'none' | 'settings' | 'info' | 'result'
 
 const STORAGE_KEY = 'guandan-memory-lab-v1'
+
+function challengeTagLabel(tag: string) {
+  switch (tag) {
+    case 'focus-count':
+      return '重点计数'
+    case 'last-trick-pattern':
+    case 'last-trick-winner':
+      return '立即回忆'
+    case 'big-card-count':
+    case 'wild-count':
+    case 'any-rank-count':
+      return '全局计数'
+    case 'recent-trick-detail':
+      return '延迟回忆'
+    case 'partner-awareness':
+      return '搭档判断'
+    default:
+      return '轮次检索'
+  }
+}
 
 function loadPersistedState() {
   try {
@@ -95,7 +115,7 @@ function App() {
   const [game, setGame] = useState<GuandanGame>(() => persisted?.game ?? makeFreshGame())
   const [stepIndex, setStepIndex] = useState(() => persisted?.stepIndex ?? 0)
   const [difficulty, setDifficulty] = useState<Difficulty>(() => persisted?.difficulty ?? 'starter')
-  const [checkedForwardSteps, setCheckedForwardSteps] = useState<number[]>(() => persisted?.checkedForwardSteps ?? [])
+  const [challengedTrickIndexes, setChallengedTrickIndexes] = useState<number[]>(() => persisted?.challengedTrickIndexes ?? [])
   const [stats, setStats] = useState<TrainingStats>(() => persisted?.stats ?? makeFreshStats())
   const [endedManually, setEndedManually] = useState(() => persisted?.endedManually ?? false)
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null)
@@ -105,6 +125,12 @@ function App() {
   const progress = game.actions.length === 0 ? 0 : Math.round((snapshot.stepIndex / game.actions.length) * 100)
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
   const isGameOver = snapshot.isComplete || endedManually
+  const leadSeat = snapshot.currentTrick?.winningSeat ?? snapshot.currentTrick?.leader ?? null
+  const tableNote = isGameOver
+    ? '本局牌谱已经封盘，可以打开战报复盘排名与答题表现。'
+    : snapshot.lastAction
+      ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
+      : '系统已预生成整局合法牌谱；每轮收轮后都会暂停提问 1 题。'
 
   // Current trick plays per seat
   const currentTrickPlays: Partial<Record<Seat, PatternPlay | null>> = {}
@@ -120,14 +146,15 @@ function App() {
     .filter(([, count]) => count === 0)
     .map(([seat]) => seat)
 
-  // Persist state on every render
-  persist({ game, stepIndex: snapshot.stepIndex, difficulty, checkedForwardSteps, stats, endedManually })
+  useEffect(() => {
+    persist({ game, stepIndex: snapshot.stepIndex, difficulty, challengedTrickIndexes, stats, endedManually })
+  }, [challengedTrickIndexes, difficulty, endedManually, game, snapshot.stepIndex, stats])
 
   function handleNewGame() {
     startTransition(() => {
       setGame(makeFreshGame())
       setStepIndex(0)
-      setCheckedForwardSteps([])
+      setChallengedTrickIndexes([])
       setEndedManually(false)
       setActiveChallenge(null)
       setModal('none')
@@ -145,28 +172,34 @@ function App() {
     setStepIndex((v) => Math.max(0, v - 1))
   }
 
-  function advanceOneStep() {
-    const nextStep = Math.min(game.actions.length, snapshot.stepIndex + 1)
-    setStepIndex(nextStep)
-    if (nextStep >= game.actions.length) {
-      setModal('result')
-    }
-  }
-
   function handleNext() {
     if (activeChallenge || endedManually || snapshot.isComplete) return
 
-    if (!checkedForwardSteps.includes(snapshot.stepIndex)) {
-      setCheckedForwardSteps((v) => [...v, snapshot.stepIndex])
-      if (shouldTriggerChallenge(game, snapshot.stepIndex, difficulty)) {
-        const question = createChallenge(game, snapshot.stepIndex, difficulty)
-        if (question) {
-          setActiveChallenge({ pendingStep: snapshot.stepIndex + 1, question, selectedIndex: null, isCorrect: null })
-          return
-        }
-      }
+    const nextStep = Math.min(game.actions.length, snapshot.stepIndex + 1)
+    const plannedChallenge = getChallengeForAdvance(
+      game,
+      snapshot.stepIndex,
+      nextStep,
+      difficulty,
+      challengedTrickIndexes,
+    )
+
+    setStepIndex(nextStep)
+
+    if (plannedChallenge) {
+      setChallengedTrickIndexes((v) => [...v, plannedChallenge.trickIndex])
+      setActiveChallenge({
+        trickIndex: plannedChallenge.trickIndex,
+        question: plannedChallenge.question,
+        selectedIndex: null,
+        isCorrect: null,
+      })
+      return
     }
-    advanceOneStep()
+
+    if (nextStep >= game.actions.length) {
+      setModal('result')
+    }
   }
 
   function handleSelectAnswer(index: number) {
@@ -186,31 +219,45 @@ function App() {
 
   function handleContinueAfterChallenge() {
     if (!activeChallenge || activeChallenge.selectedIndex === null) return
-    const nextStep = Math.min(game.actions.length, activeChallenge.pendingStep)
-    setStepIndex(nextStep)
     setActiveChallenge(null)
-    if (nextStep >= game.actions.length) {
+    if (stepIndex >= game.actions.length) {
       setModal('result')
     }
   }
 
   return (
     <div className="app-root">
-      {/* ── Top bar ── */}
       <header className="top-bar">
-        <div className="top-left">
-          <strong className="app-title">掼蛋记牌</strong>
-          <span className="tag">级牌 {rankToText(game.levelRank)}</span>
-          <span className="tag">{SEAT_LABELS[game.startingSeat]}起手</span>
+        <div className="title-block">
+          <span className="kicker">MEMORY TABLE</span>
+          <div className="title-row">
+            <strong className="app-title">掼蛋记牌台</strong>
+            <span className="difficulty-chip">{DIFFICULTY_META[difficulty].label}</span>
+          </div>
+          <p className="title-copy">用完整牌局回放训练轮次感、牌型记忆与大牌去向判断；每轮收轮后都会立即检索一次。</p>
         </div>
-        <div className="top-right">
-          <button className="icon-btn" onClick={() => setModal(modal === 'settings' ? 'none' : 'settings')} title="难度设置">⚙</button>
-          <button className="icon-btn" onClick={() => setModal(modal === 'info' ? 'none' : 'info')} title="轮次回顾">📋</button>
-          {isGameOver && <button className="icon-btn accent-glow" onClick={() => setModal('result')} title="本局总结">📊</button>}
+        <div className="toolbar-block">
+          <div className="table-badges">
+            <span className="tag level-focus-tag">本局级牌 {rankToText(game.levelRank)}</span>
+            <span className="tag">{SEAT_LABELS[game.startingSeat]}起手</span>
+            <span className="tag">#{game.seed.toString(36).slice(-6)}</span>
+          </div>
+          <div className="top-right">
+            <button type="button" className="top-action" onClick={() => setModal(modal === 'settings' ? 'none' : 'settings')}>
+              设置
+            </button>
+            <button type="button" className="top-action" onClick={() => setModal(modal === 'info' ? 'none' : 'info')}>
+              回顾
+            </button>
+            {isGameOver ? (
+              <button type="button" className="top-action accent-glow" onClick={() => setModal('result')}>
+                战报
+              </button>
+            ) : null}
+          </div>
         </div>
       </header>
 
-      {/* ── Table ── */}
       <section className="table-scene">
         <div className="table-felt">
           <SeatArea seat="north" remaining={snapshot.remainingCounts.north} position="top"
@@ -230,48 +277,54 @@ function App() {
             lastPlay={currentTrickPlays.south}
             isFinished={finishedSeats.includes('south')} levelRank={game.levelRank} />
 
-          {/* Center info */}
           <div className="table-center">
-            {isGameOver ? (
-              <span className="center-msg over">牌局结束</span>
-            ) : snapshot.currentTrick ? (
-              <>
-                <span className="center-round">第 {snapshot.currentTrick.index + 1} 轮</span>
-                <span className="center-step">{snapshot.stepIndex}/{game.actions.length}</span>
-              </>
-            ) : (
-              <span className="center-msg">准备开始</span>
-            )}
+            <div className="center-medallion">
+              {isGameOver ? (
+                <span className="center-msg over">本局结束</span>
+              ) : snapshot.currentTrick ? (
+                <>
+                  <span className="center-round">第 {snapshot.currentTrick.index + 1} 轮</span>
+                  <span className="center-step">{snapshot.stepIndex}/{game.actions.length}</span>
+                </>
+              ) : (
+                <span className="center-msg">准备开始</span>
+              )}
+              {leadSeat ? <span className="center-owner">当前压桌：{SEAT_LABELS[leadSeat]}</span> : null}
+            </div>
+            <p className="table-note">{tableNote}</p>
           </div>
         </div>
 
-        {/* Progress */}
         <div className="progress-container">
           <div className="progress-fill" style={{ width: `${progress}%` }} />
         </div>
       </section>
 
-      {/* ── Controls ── */}
-      <section className="controls">
-        <button className="ctrl-btn" onClick={handlePrevious} disabled={snapshot.stepIndex <= 0 || !!activeChallenge}>◀ 上一步</button>
-        <button className="ctrl-btn primary" onClick={handleNext} disabled={isGameOver || !!activeChallenge}>下一步 ▶</button>
-        <button className="ctrl-btn" onClick={handleEndGame} disabled={isGameOver}>结束</button>
-        <button className="ctrl-btn accent" onClick={handleNewGame}>新牌局</button>
-      </section>
+      <section className="control-dock">
+        <div className="mini-stats">
+          <span><strong>{stats.attempted}</strong> 题</span>
+          <span><strong>{accuracy}%</strong> 正确率</span>
+          <span><strong>{stats.streak}</strong> 连对</span>
+          <span><strong>{progress}%</strong> 进度</span>
+        </div>
 
-      {/* ── Mini stats strip ── */}
-      <div className="mini-stats">
-        <span>答题 {stats.attempted}</span>
-        <span>正确 {accuracy}%</span>
-        <span>连对 {stats.streak}</span>
-        <span>进度 {progress}%</span>
-      </div>
+        <section className="controls">
+          <button type="button" className="ctrl-btn" onClick={handlePrevious} disabled={snapshot.stepIndex <= 0 || !!activeChallenge}>上一步</button>
+          <button type="button" className="ctrl-btn primary" onClick={handleNext} disabled={isGameOver || !!activeChallenge}>下一步</button>
+          <button type="button" className="ctrl-btn" onClick={handleEndGame} disabled={isGameOver}>结束</button>
+          <button type="button" className="ctrl-btn accent" onClick={handleNewGame}>新牌局</button>
+        </section>
+      </section>
 
       {/* ══════ Challenge Overlay ══════ */}
       {activeChallenge && (
         <div className="overlay">
           <div className="dialog challenge-dialog">
-            <h3>🧠 记牌挑战</h3>
+            <h3>记牌挑战</h3>
+            <div className="challenge-meta">
+              <p className="challenge-tag">{challengeTagLabel(activeChallenge.question.tag)} · 第 {activeChallenge.trickIndex + 1} 轮后暂停</p>
+              <p className="challenge-difficulty">题型难度 · {DIFFICULTY_META[activeChallenge.question.difficulty].label}</p>
+            </div>
             <p className="q-prompt">{activeChallenge.question.prompt}</p>
             <div className="choice-grid">
               {activeChallenge.question.options.map((opt, i) => {
@@ -302,6 +355,10 @@ function App() {
         <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setModal('none') }}>
           <div className="dialog">
             <div className="dialog-head"><h3>训练设置</h3><button className="close-btn" onClick={() => setModal('none')}>✕</button></div>
+            <div className="dialog-section compact-top">
+              <h4>题型难度</h4>
+              <p className="settings-copy">当前为 {DIFFICULTY_META[difficulty].label}。入门难度下，如果本轮出现 A、K、王或级牌，收轮后会优先追问对应剩余张数。</p>
+            </div>
             <div className="diff-list">
               {(Object.entries(DIFFICULTY_META) as Array<[Difficulty, (typeof DIFFICULTY_META)[Difficulty]]>).map(([key, meta]) => (
                 <button key={key} className={`diff-item ${difficulty === key ? 'active' : ''}`}
@@ -376,7 +433,7 @@ function App() {
       {modal === 'result' && (
         <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setModal('none') }}>
           <div className="dialog">
-            <div className="dialog-head"><h3>📊 本局总结</h3><button className="close-btn" onClick={() => setModal('none')}>✕</button></div>
+            <div className="dialog-head"><h3>本局总结</h3><button className="close-btn" onClick={() => setModal('none')}>✕</button></div>
             <div className="dialog-section">
               <h4>完成排名</h4>
               <div className="finish-list">
