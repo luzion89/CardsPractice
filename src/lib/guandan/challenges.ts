@@ -3,6 +3,7 @@ import {
   createSeededRng,
   DIFFICULTY_META,
   faceLabelForTraining,
+  nextSeatOf,
   partnerOf,
   remainingFaceCounts,
   SEAT_LABELS,
@@ -271,18 +272,20 @@ function buildAnyRankCountQuestion(game: GuandanGame, stepIndex: number, difficu
 
 function buildPartnerPressureQuestion(trick: VisibleTrick, difficulty: Difficulty, rng: () => number) {
   const winner = trick.winningSeat ?? trick.leader
-  const options = shuffle([
-    `${SEAT_LABELS[winner]} 与 ${SEAT_LABELS[partnerOf(winner)]}`,
-    `${SEAT_LABELS[winner]} 与 ${SEAT_LABELS[winner]}`,
-    `${SEAT_LABELS[partnerOf(winner)]} 与 ${SEAT_LABELS[winner] === '南家' ? '东家' : '南家'}`,
-    `${SEAT_LABELS[winner]} 与 ${SEAT_LABELS[winner] === '北家' ? '西家' : '北家'}`,
-  ], rng)
+  const partner = partnerOf(winner)
+  const labelPair = (first: typeof winner, second: typeof winner) => `${SEAT_LABELS[first]} 与 ${SEAT_LABELS[second]}`
+  const options = shuffle(uniqueStrings([
+    labelPair(winner, partner),
+    labelPair(winner, winner),
+    labelPair(winner, nextSeatOf(winner)),
+    labelPair(partner, nextSeatOf(partner)),
+  ]), rng)
 
   return {
     prompt: '上一轮收轮者的队友是谁？',
     options,
-    correctIndex: options.indexOf(`${SEAT_LABELS[winner]} 与 ${SEAT_LABELS[partnerOf(winner)]}`),
-    explanation: `${SEAT_LABELS[winner]} 的对家队友是 ${SEAT_LABELS[partnerOf(winner)]}。`,
+    correctIndex: options.indexOf(labelPair(winner, partner)),
+    explanation: `${SEAT_LABELS[winner]} 的对家队友是 ${SEAT_LABELS[partner]}。`,
     difficulty,
     tag: 'partner-awareness',
   } satisfies ChallengeQuestion

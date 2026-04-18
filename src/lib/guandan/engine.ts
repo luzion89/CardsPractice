@@ -38,17 +38,17 @@ const ORDER_RING = [14, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 export const SEATS: Seat[] = ['south', 'east', 'north', 'west']
 
 export const SEAT_LABELS: Record<Seat, string> = {
-  south: '南家',
-  east: '东家',
-  north: '北家',
-  west: '西家',
+  south: '自己',
+  east: '下家',
+  north: '对家',
+  west: '上家',
 }
 
 export const TEAM_LABELS: Record<Seat, string> = {
-  south: '南北联手',
-  east: '东西联手',
-  north: '南北联手',
-  west: '东西联手',
+  south: '自己与对家',
+  east: '上家与下家',
+  north: '自己与对家',
+  west: '上家与下家',
 }
 
 export const PARTNERS: Record<Seat, Seat> = {

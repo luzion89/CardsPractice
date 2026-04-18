@@ -51,10 +51,12 @@ export function PlayingCard({ card, levelRank, size = 'md' }: PlayingCardProps) 
 
   const label = rankToText(card.rank)
   const fillId = `card-fill-${card.id}`
-  const cornerX = 6
-  const cornerY = fontSize + 1
-  const mirroredCornerX = w - 6
-  const mirroredCornerY = h - 6
+  const cornerX = 7
+  const topRankY = size === 'sm' ? 13 : 16
+  const topSuitY = topRankY + suitSize - 1
+  const bottomCornerX = w - 7
+  const bottomSuitY = h - 7
+  const bottomRankY = bottomSuitY - suitSize - 4
   const badgeText = isWild ? '逢配' : isLevel ? '级牌' : null
 
   return (
@@ -78,24 +80,22 @@ export function PlayingCard({ card, levelRank, size = 'md' }: PlayingCardProps) 
           </text>
         </g>
       )}
-      <text x={cornerX} y={cornerY} fill={info.color}
+      <text x={cornerX} y={topRankY} fill={info.color}
         fontSize={fontSize} fontWeight="700" fontFamily="monospace">
         {label}
       </text>
-      <text x={cornerX} y={cornerY + suitSize} fill={info.color}
+      <text x={cornerX} y={topSuitY} fill={info.color}
         fontSize={suitSize} fontFamily="monospace">
         {info.symbol}
       </text>
-      <g transform={`translate(${mirroredCornerX} ${mirroredCornerY}) rotate(180)`}>
-        <text x="0" y="0" textAnchor="end" fill={info.color}
-          fontSize={fontSize} fontWeight="700" fontFamily="monospace">
-          {label}
-        </text>
-        <text x="0" y={suitSize} textAnchor="end" fill={info.color}
-          fontSize={suitSize} fontFamily="monospace">
-          {info.symbol}
-        </text>
-      </g>
+      <text x={bottomCornerX} y={bottomRankY} textAnchor="end" fill={info.color}
+        fontSize={fontSize} fontWeight="700" fontFamily="monospace">
+        {label}
+      </text>
+      <text x={bottomCornerX} y={bottomSuitY} textAnchor="end" fill={info.color}
+        fontSize={suitSize} fontFamily="monospace">
+        {info.symbol}
+      </text>
       <text x={w / 2} y={h * 0.58} textAnchor="middle" fill={info.color}
         fillOpacity="0.1" fontSize={suitSize + 16}>
         {info.symbol}
