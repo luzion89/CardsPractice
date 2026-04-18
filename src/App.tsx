@@ -110,7 +110,9 @@ function persist(state: PersistedState) {
 
 function sortHandCards(cards: Card[], levelRank: number) {
   return [...cards].sort((left, right) => {
-    const powerGap = powerValue(left.rank, levelRank) - powerValue(right.rank, levelRank)
+    const leftPower = left.rank === levelRank ? 18 : powerValue(left.rank, levelRank)
+    const rightPower = right.rank === levelRank ? 18 : powerValue(right.rank, levelRank)
+    const powerGap = leftPower - rightPower
     if (powerGap !== 0) {
       return powerGap
     }
@@ -206,7 +208,7 @@ function TablePlaySlot({
 
 function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
   const groups = groupHandCards(cards, levelRank)
-  const stackOffset = 13
+  const stackOffset = 15
   const baseHeight = 78
 
   return (

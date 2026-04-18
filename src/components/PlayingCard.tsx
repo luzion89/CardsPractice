@@ -23,8 +23,8 @@ export function PlayingCard({ card, levelRank, size = 'md' }: PlayingCardProps) 
   const isLevel = card.rank === levelRank && !isJoker
   const w = size === 'sm' ? 40 : 54
   const h = size === 'sm' ? 58 : 78
-  const fontSize = size === 'sm' ? 12 : 15
-  const suitSize = size === 'sm' ? 12 : 17
+  const fontSize = size === 'sm' ? 13 : 17
+  const suitSize = size === 'sm' ? 12 : 16
 
   if (isJoker) {
     const jokerColor = card.rank === 17 ? '#c0392b' : '#1a1a2e'
@@ -53,11 +53,14 @@ export function PlayingCard({ card, levelRank, size = 'md' }: PlayingCardProps) 
   const fillId = `card-fill-${card.id}`
   const cornerX = 7
   const topRankY = size === 'sm' ? 13 : 16
-  const topSuitY = topRankY + suitSize - 1
+  const topSuitY = topRankY + suitSize
   const bottomCornerX = w - 7
   const bottomSuitY = h - 7
   const bottomRankY = bottomSuitY - suitSize - 4
-  const badgeText = isWild ? '逢配' : isLevel ? '级牌' : null
+  const badgeCenterY = size === 'sm' ? 10 : 11
+  const badgeTextY = size === 'sm' ? 13 : 14.5
+  const badgeRx = size === 'sm' ? 8 : 9
+  const badgeRy = size === 'sm' ? 4.8 : 5.6
 
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className={`playing-card ${isWild ? 'wild' : ''} ${isLevel ? 'level' : ''}`}>
@@ -71,42 +74,52 @@ export function PlayingCard({ card, levelRank, size = 'md' }: PlayingCardProps) 
         fill={`url(#${fillId})`}
         stroke={isWild ? '#d99714' : isLevel ? '#bf8a21' : '#b9b2a5'} strokeWidth={isWild || isLevel ? 1.5 : 0.9} />
       <rect x="3" y="3" width={w - 6} height={h - 6} rx="4" fill="none" stroke="rgba(0,0,0,0.08)" />
-      {badgeText && (
+      {isWild ? (
         <g>
-          <rect x={w / 2 - 15} y="4" width="30" height={size === 'sm' ? 9 : 11} rx="5.5" fill={isWild ? '#d99714' : '#bf8a21'} opacity="0.95" />
-          <text x={w / 2} y={size === 'sm' ? 11 : 12.5} textAnchor="middle" fill="#fffaf0"
-            fontSize={size === 'sm' ? 5.5 : 6.5} fontWeight="700" letterSpacing="0.5">
-            {badgeText}
+          <text x={w / 2} y={badgeTextY} textAnchor="middle" fill="#f4cb71"
+            stroke="#c6404d" strokeWidth={size === 'sm' ? 1.1 : 1.25} paintOrder="stroke"
+            fontSize={size === 'sm' ? 11 : 13} fontWeight="800">
+            ♥
+          </text>
+        </g>
+      ) : (
+        <g>
+          <ellipse cx={w / 2} cy={badgeCenterY} rx={badgeRx} ry={badgeRy}
+            fill={isLevel ? 'rgba(247, 224, 164, 0.96)' : 'rgba(255, 255, 255, 0.9)'}
+            stroke={isLevel ? 'rgba(191, 138, 33, 0.72)' : 'rgba(0, 0, 0, 0.08)'} strokeWidth="0.9" />
+          <text x={w / 2} y={badgeTextY} textAnchor="middle" fill={info.color}
+            fontSize={size === 'sm' ? 8.5 : 10.5} fontWeight="700">
+            {info.symbol}
           </text>
         </g>
       )}
       <text x={cornerX} y={topRankY} fill={info.color}
-        fontSize={fontSize} fontWeight="700" fontFamily="monospace">
+        fontSize={fontSize} fontWeight="800" fontFamily="Trebuchet MS, Segoe UI, sans-serif">
         {label}
       </text>
       <text x={cornerX} y={topSuitY} fill={info.color}
-        fontSize={suitSize} fontFamily="monospace">
+        fontSize={suitSize} fontFamily="Trebuchet MS, Segoe UI, sans-serif">
         {info.symbol}
       </text>
       <text x={bottomCornerX} y={bottomRankY} textAnchor="end" fill={info.color}
-        fontSize={fontSize} fontWeight="700" fontFamily="monospace">
+        fontSize={fontSize} fontWeight="800" fontFamily="Trebuchet MS, Segoe UI, sans-serif">
         {label}
       </text>
       <text x={bottomCornerX} y={bottomSuitY} textAnchor="end" fill={info.color}
-        fontSize={suitSize} fontFamily="monospace">
+        fontSize={suitSize} fontFamily="Trebuchet MS, Segoe UI, sans-serif">
         {info.symbol}
       </text>
       <text x={w / 2} y={h * 0.58} textAnchor="middle" fill={info.color}
-        fillOpacity="0.1" fontSize={suitSize + 16}>
+        fillOpacity="0.1" fontSize={suitSize + 18}>
         {info.symbol}
       </text>
       <text x={w / 2} y={h * 0.62} textAnchor="middle" fill={info.color}
-        fontSize={suitSize + 6}>
+        fontSize={suitSize + 7}>
         {info.symbol}
       </text>
       {(isWild || isLevel) && (
-        <text x={w / 2} y={h - 4} textAnchor="middle" fill={isWild ? '#d99714' : '#bf8a21'}
-          fontSize={fontSize - 3} fontWeight="700">{isWild ? '配' : '级'}</text>
+        <text x={w / 2} y={h - 4} textAnchor="middle" fill={isWild ? '#c6404d' : '#bf8a21'}
+          fontSize={fontSize - 4} fontWeight="800">{isWild ? '配' : '级'}</text>
       )}
     </svg>
   )
