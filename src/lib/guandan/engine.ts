@@ -76,6 +76,15 @@ export const DIFFICULTY_META: Record<Difficulty, DifficultyMeta> = {
   },
 }
 
+export type HandGroupKind = 'straight' | 'tube' | 'plate' | 'triple' | 'pair' | 'single' | 'bomb' | 'wild' | 'joker' | 'jokerBomb'
+
+export interface ArrangedHandGroup {
+  key: string
+  kind: HandGroupKind
+  cards: Card[]
+  anchorValue: number
+}
+
 const SUIT_SYMBOLS: Record<Suit, string> = {
   clubs: '♣',
   diamonds: '♦',
@@ -96,6 +105,28 @@ const TYPE_LABELS: Record<PatternType, string> = {
   bomb: '炸弹',
   straightFlush: '同花顺',
   jokerBomb: '天王炸',
+}
+
+const SUIT_ORDER: Record<Suit, number> = {
+  clubs: 0,
+  diamonds: 1,
+  spades: 2,
+  hearts: 3,
+  black: 4,
+  red: 5,
+}
+
+const HAND_GROUP_ORDER: Record<HandGroupKind, number> = {
+  straight: 10,
+  tube: 12,
+  plate: 14,
+  triple: 20,
+  pair: 30,
+  single: 40,
+  bomb: 50,
+  wild: 60,
+  joker: 70,
+  jokerBomb: 80,
 }
 
 export function partnerOf(seat: Seat) {
@@ -205,11 +236,190 @@ function sortCards(cards: Card[], levelRank: number) {
     if (powerGap !== 0) {
       return powerGap
     }
-    if (left.suit === right.suit) {
-      return left.deck - right.deck
+
+    const suitGap = SUIT_ORDER[left.suit] - SUIT_ORDER[right.suit]
+    if (suitGap !== 0) {
+      return suitGap
     }
-    return SUIT_SYMBOLS[left.suit].localeCompare(SUIT_SYMBOLS[right.suit], 'zh-Hans-CN')
+
+    return left.deck - right.deck
   })
+}
+
+function extractLongestRun(
+  available: Map<number, Card[]>,
+  levelRank: number,
+  needPerRank: number,
+  minLength: number,
+) {
+  let bestRun: number[] = []
+  let currentRun: number[] = []
+
+  for (const rank of FACE_RANKS) {
+    if (rank === levelRank) {
+      if (currentRun.length >= minLength && currentRun.length > bestRun.length) {
+        bestRun = [...currentRun]
+      }
+      currentRun = []
+      continue
+    }
+
+    const count = available.get(rank)?.length ?? 0
+    if (count >= needPerRank) {
+      currentRun.push(rank)
+      continue
+    }
+
+    if (currentRun.length >= minLength && currentRun.length > bestRun.length) {
+      bestRun = [...currentRun]
+    }
+    currentRun = []
+  }
+
+  if (currentRun.length >= minLength && currentRun.length > bestRun.length) {
+    bestRun = [...currentRun]
+  }
+
+  return bestRun.length >= minLength ? bestRun : null
+}
+
+function takeCardsFromRun(available: Map<number, Card[]>, ranks: number[], countPerRank: number) {
+  const cards: Card[] = []
+
+  for (const rank of ranks) {
+    const bucket = available.get(rank)
+    if (!bucket || bucket.length < countPerRank) {
+      return null
+    }
+
+    const taken = bucket.splice(0, countPerRank)
+    cards.push(...taken)
+    if (bucket.length === 0) {
+      available.delete(rank)
+    }
+  }
+
+  return cards
+}
+
+function pushRunGroups(
+  groups: ArrangedHandGroup[],
+  available: Map<number, Card[]>,
+  levelRank: number,
+  kind: 'straight' | 'tube' | 'plate',
+  needPerRank: number,
+  minLength: number,
+) {
+  while (true) {
+    const run = extractLongestRun(available, levelRank, needPerRank, minLength)
+    if (!run) {
+      return
+    }
+
+    const cards = takeCardsFromRun(available, run, needPerRank)
+    if (!cards) {
+      return
+    }
+
+    groups.push({
+      key: `${kind}-${run[0]}-${run.at(-1)}`,
+      kind,
+      cards: sortCards(cards, levelRank),
+      anchorValue: powerValue(run[0], levelRank),
+    })
+  }
+}
+
+export function arrangeHandGroups(hand: Card[], levelRank: number) {
+  const available = new Map<number, Card[]>()
+  const wilds: Card[] = []
+  const jokers: Card[] = []
+  const groups: ArrangedHandGroup[] = []
+
+  for (const card of sortCards(hand, levelRank)) {
+    if (isWildCard(card, levelRank)) {
+      wilds.push(card)
+      continue
+    }
+
+    if (card.rank >= 16) {
+      jokers.push(card)
+      continue
+    }
+
+    available.set(card.rank, [...(available.get(card.rank) ?? []), card])
+  }
+
+  const blackJokers = jokers.filter((card) => card.rank === 16)
+  const redJokers = jokers.filter((card) => card.rank === 17)
+
+  if (blackJokers.length === 2 && redJokers.length === 2) {
+    groups.push({
+      key: 'joker-bomb',
+      kind: 'jokerBomb',
+      cards: sortCards([...blackJokers, ...redJokers], levelRank),
+      anchorValue: 99,
+    })
+  } else if (jokers.length > 0) {
+    groups.push({
+      key: 'joker',
+      kind: 'joker',
+      cards: sortCards(jokers, levelRank),
+      anchorValue: 90,
+    })
+  }
+
+  const bombEntries = [...available.entries()]
+    .filter(([, cards]) => cards.length >= 4)
+    .toSorted((left, right) => powerValue(left[0], levelRank) - powerValue(right[0], levelRank))
+
+  for (const [rank, cards] of bombEntries) {
+    available.delete(rank)
+    groups.push({
+      key: `bomb-${rank}`,
+      kind: 'bomb',
+      cards: sortCards(cards, levelRank),
+      anchorValue: powerValue(rank, levelRank),
+    })
+  }
+
+  pushRunGroups(groups, available, levelRank, 'plate', 3, 2)
+  pushRunGroups(groups, available, levelRank, 'tube', 2, 3)
+  pushRunGroups(groups, available, levelRank, 'straight', 1, 5)
+
+  const leftovers = [...available.entries()].toSorted((left, right) => powerValue(left[0], levelRank) - powerValue(right[0], levelRank))
+
+  for (const [rank, cards] of leftovers) {
+    const kind = cards.length === 3 ? 'triple' : cards.length === 2 ? 'pair' : 'single'
+    groups.push({
+      key: `${kind}-${rank}`,
+      kind,
+      cards: sortCards(cards, levelRank),
+      anchorValue: powerValue(rank, levelRank),
+    })
+  }
+
+  if (wilds.length > 0) {
+    groups.push({
+      key: 'wild',
+      kind: 'wild',
+      cards: sortCards(wilds, levelRank),
+      anchorValue: 95,
+    })
+  }
+
+  return groups.toSorted((left, right) => {
+    const orderGap = HAND_GROUP_ORDER[left.kind] - HAND_GROUP_ORDER[right.kind]
+    if (orderGap !== 0) {
+      return orderGap
+    }
+
+    return left.anchorValue - right.anchorValue
+  })
+}
+
+export function arrangeHandCards(hand: Card[], levelRank: number) {
+  return arrangeHandGroups(hand, levelRank).flatMap((group) => group.cards)
 }
 
 function buildDeck() {
@@ -796,6 +1006,126 @@ function estimateHandCount(hand: Card[], levelRank: number) {
   return moves
 }
 
+function comboPreservationPenalty(play: PatternPlay, hand: Card[], levelRank: number) {
+  const analysis = analyzeHand(hand, levelRank)
+  const naturalUsage = new Map<number, number>()
+
+  for (const card of play.cards) {
+    if (card.rank >= 16 || isWildCard(card, levelRank)) {
+      continue
+    }
+
+    naturalUsage.set(card.rank, (naturalUsage.get(card.rank) ?? 0) + 1)
+  }
+
+  let penalty = 0
+
+  for (const [rank] of naturalUsage) {
+    const naturalCount = analysis.naturalByRank.get(rank)?.length ?? 0
+
+    if (naturalCount >= 4) {
+      const keepsWholeBomb =
+        play.type === 'bomb' &&
+        play.primaryValue === powerValue(rank, levelRank) &&
+        (play.sameRankCount ?? 0) === naturalCount
+
+      if (!keepsWholeBomb) {
+        penalty += 90
+      }
+      continue
+    }
+
+    if (naturalCount === 3 && play.type !== 'triple' && play.type !== 'fullHouse' && play.type !== 'plate') {
+      penalty += 28
+      continue
+    }
+
+    if (naturalCount === 2 && play.type !== 'pair' && play.type !== 'tube' && play.type !== 'fullHouse') {
+      penalty += 12
+      continue
+    }
+
+    if (play.type === 'straight' && naturalCount >= 2) {
+      penalty += 10
+    }
+  }
+
+  if (play.wildCount > 0) {
+    penalty += play.wildCount * 10
+
+    if (play.type === 'straight' || play.type === 'tube' || play.type === 'plate') {
+      penalty += 28
+    } else if (play.type === 'fullHouse') {
+      penalty += 18
+    } else if (isBombPattern(play)) {
+      penalty += 22
+    }
+  }
+
+  if (hand.length >= 18 && (play.type === 'straight' || play.type === 'tube' || play.type === 'plate' || play.type === 'fullHouse')) {
+    penalty += 18
+  }
+
+  if (hand.length >= 16 && play.cards.length >= 5) {
+    penalty += 8
+  }
+
+  return penalty
+}
+
+function playImprovesTempo(play: PatternPlay, hand: Card[], levelRank: number) {
+  const afterHand = hand.filter((card) => !play.cards.some((used) => used.id === card.id))
+  return estimateHandCount(afterHand, levelRank) < estimateHandCount(hand, levelRank)
+}
+
+function breaksNaturalBomb(play: PatternPlay, hand: Card[], levelRank: number) {
+  const naturalCounts = new Map<number, number>()
+  for (const card of hand) {
+    if (card.rank >= 16 || isWildCard(card, levelRank)) {
+      continue
+    }
+    naturalCounts.set(card.rank, (naturalCounts.get(card.rank) ?? 0) + 1)
+  }
+
+  const usedRanks = Array.from(
+    new Set(play.cards.filter((card) => card.rank < 16 && !isWildCard(card, levelRank)).map((card) => card.rank)),
+  )
+
+  return usedRanks.some((rank) => {
+    const naturalCount = naturalCounts.get(rank) ?? 0
+    return naturalCount >= 4 && !(play.type === 'bomb' && play.sameRankCount === naturalCount && usedRanks.length === 1)
+  })
+}
+
+function isComplexPattern(play: PatternPlay) {
+  return play.type === 'straight' || play.type === 'tube' || play.type === 'plate' || play.type === 'fullHouse'
+}
+
+function shouldKeepCandidate(play: PatternPlay, hand: Card[], levelRank: number, urgent: boolean) {
+  if (play.cards.length === hand.length) {
+    return true
+  }
+
+  if (breaksNaturalBomb(play, hand, levelRank)) {
+    return urgent && hand.length <= 6
+  }
+
+  const preservePenalty = comboPreservationPenalty(play, hand, levelRank)
+  if (preservePenalty >= 80) {
+    return urgent || hand.length <= 5
+  }
+
+  if (!urgent && preservePenalty >= 32 && hand.length >= 10) {
+    return false
+  }
+
+  if (!urgent && play.wildCount > 0 && isComplexPattern(play) && hand.length > 8) {
+    return false
+  }
+
+  return true
+}
+
 function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
   const handSize = hand.length
   // Instant-win: play all remaining cards
@@ -808,7 +1138,7 @@ function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
   const afterMoves = estimateHandCount(afterHand, levelRank)
   const currentMoves = estimateHandCount(hand, levelRank)
 
-  let score = 0
+  let score = comboPreservationPenalty(play, hand, levelRank)
 
   // Prefer plays that reduce move count efficiently
   score += (currentMoves - afterMoves) * -30
@@ -826,23 +1156,30 @@ function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
   if (play.type === 'pair') {
     score -= 8
   }
+  if (play.type === 'triple') {
+    score -= 4
+  }
 
   // Penalize breaking combos (straights, tubes, plates)
   if (play.type === 'straight' || play.type === 'tube' || play.type === 'plate') {
-    score -= 5
+    score += handSize > 10 ? 10 : -4
   }
   if (play.type === 'fullHouse') {
-    score -= 3
+    score += handSize > 10 ? 8 : -2
   }
 
   // Strongly preserve bombs for later
   if (isBombPattern(play)) {
-    score += handSize > 6 ? 80 : 15
+    score += handSize > 6 ? 96 : 18
   }
 
   // If hand is small, start playing aggressively
   if (handSize <= 5) {
     score -= play.cards.length * 6 // prefer multi-card plays to finish faster
+  }
+
+  if (afterMoves <= 2) {
+    score -= 12
   }
 
   return score
@@ -863,7 +1200,8 @@ function scoreResponse(
     return -9999
   }
 
-  let score = 0
+  const preservePenalty = comboPreservationPenalty(play, hand, levelRank)
+  let score = preservePenalty
 
   // Base: prefer smaller plays to beat the current
   score += play.primaryValue * 0.8
@@ -908,7 +1246,8 @@ function chooseLeadPlay(
   actor: Seat,
   remainingCounts: Record<Seat, number>,
 ) {
-  const candidates = enumerateLeadPatterns(hand, levelRank)
+  const rawCandidates = enumerateLeadPatterns(hand, levelRank)
+  const candidates = rawCandidates.filter((play) => shouldKeepCandidate(play, hand, levelRank, false))
   if (candidates.length === 0) return undefined
 
   const partnerSeat = partnerOf(actor)
@@ -918,16 +1257,29 @@ function chooseLeadPlay(
   // (feed partner small singles so they can play their remaining cards)
   if (partnerClose) {
     const smallSingles = candidates
-      .filter((p) => p.type === 'single' && p.primaryValue <= 10)
+      .filter((p) => p.type === 'single' && p.primaryValue <= 10 && comboPreservationPenalty(p, hand, levelRank) <= 10)
       .toSorted((a, b) => a.primaryValue - b.primaryValue)
     if (smallSingles.length > 0) {
       return smallSingles[0]
     }
     const smallPairs = candidates
-      .filter((p) => p.type === 'pair' && p.primaryValue <= 10)
+      .filter((p) => p.type === 'pair' && p.primaryValue <= 10 && comboPreservationPenalty(p, hand, levelRank) <= 12)
       .toSorted((a, b) => a.primaryValue - b.primaryValue)
     if (smallPairs.length > 0) {
       return smallPairs[0]
+    }
+  }
+
+  if (hand.length >= 18) {
+    const safeOpeners = candidates.filter(
+      (play) =>
+        (play.type === 'single' || play.type === 'pair' || play.type === 'triple') &&
+        comboPreservationPenalty(play, hand, levelRank) <= 14,
+    )
+    if (safeOpeners.length > 0) {
+      return safeOpeners.toSorted(
+        (left, right) => scoreLead(left, hand, levelRank) - scoreLead(right, hand, levelRank),
+      )[0]
     }
   }
 
@@ -944,7 +1296,10 @@ function chooseResponsePlay(
   winningSeat: Seat,
   remainingCounts: Record<Seat, number>,
 ) {
-  const candidates = enumerateLeadPatterns(hand, levelRank).filter((pattern) => canBeat(pattern, current))
+  const urgent = remainingCounts[winningSeat] <= 5 || remainingCounts[partnerOf(actor)] <= 3 || hand.length <= 6
+  const candidates = enumerateLeadPatterns(hand, levelRank)
+    .filter((pattern) => canBeat(pattern, current))
+    .filter((play) => shouldKeepCandidate(play, hand, levelRank, urgent))
   if (candidates.length === 0) {
     return null
   }
@@ -956,12 +1311,16 @@ function chooseResponsePlay(
   const sameTypeCandidates = candidates.filter((pattern) => !isBombPattern(pattern))
   const bombCandidates = candidates.filter((pattern) => isBombPattern(pattern))
 
+  const scoreCandidate = (play: PatternPlay) =>
+    scoreResponse(play, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead)
+
   const chooseBest = (plays: PatternPlay[]) =>
-    plays.toSorted(
-      (left, right) =>
-        scoreResponse(left, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead) -
-        scoreResponse(right, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead),
-    )[0]
+    plays
+      .map((play) => ({
+        play,
+        score: scoreCandidate(play),
+      }))
+      .toSorted((left, right) => left.score - right.score)[0]
 
   // Teammate is winning the trick — only play if we can finish
   if (teammateAhead) {
@@ -972,28 +1331,43 @@ function chooseResponsePlay(
   // Try same-type plays first
   if (sameTypeCandidates.length > 0) {
     const bestSameType = chooseBest(sameTypeCandidates)
+    if (!bestSameType) {
+      return null
+    }
+
     // Always play if: enemy is dangerous, we're close to finishing, or cost is low
-    if (enemyDanger || partnerClose || hand.length <= 8 || bestSameType.cards.length >= 5) {
-      return bestSameType
+    if (enemyDanger || partnerClose || hand.length <= 8 || bestSameType.play.cards.length >= 5) {
+      return bestSameType.play
     }
+
     // Play if the overshoot is small (don't waste big cards)
-    if (bestSameType.primaryValue - current.primaryValue <= 3) {
-      return bestSameType
+    if (bestSameType.play.primaryValue - current.primaryValue <= 2 && bestSameType.score <= 34) {
+      return bestSameType.play
     }
+
     // If hand count improves, worth it
-    const afterHand = hand.filter((c) => !bestSameType.cards.some((p) => p.id === c.id))
-    const movesBefore = estimateHandCount(hand, levelRank)
-    const movesAfter = estimateHandCount(afterHand, levelRank)
-    if (movesAfter < movesBefore) {
-      return bestSameType
+    if (playImprovesTempo(bestSameType.play, hand, levelRank) && bestSameType.score <= 40) {
+      return bestSameType.play
+    }
+
+    if (bestSameType.score <= 18) {
+      return bestSameType.play
     }
   }
 
   // Try bombs
   if (bombCandidates.length > 0) {
     const bestBomb = chooseBest(bombCandidates)
-    if (enemyDanger || partnerClose || hand.length <= 6 || bestBomb.cards.length === hand.length) {
-      return bestBomb
+    if (!bestBomb) {
+      return null
+    }
+
+    if (enemyDanger || partnerClose || hand.length <= 6 || bestBomb.play.cards.length === hand.length) {
+      return bestBomb.play
+    }
+
+    if (isBombPattern(current) && bestBomb.score <= 56) {
+      return bestBomb.play
     }
   }
 
@@ -1002,10 +1376,10 @@ function chooseResponsePlay(
 
 function cloneHands(hands: Record<Seat, Card[]>, levelRank: number) {
   return {
-    south: sortCards(hands.south, levelRank),
-    east: sortCards(hands.east, levelRank),
-    north: sortCards(hands.north, levelRank),
-    west: sortCards(hands.west, levelRank),
+    south: arrangeHandCards(hands.south, levelRank),
+    east: arrangeHandCards(hands.east, levelRank),
+    north: arrangeHandCards(hands.north, levelRank),
+    west: arrangeHandCards(hands.west, levelRank),
   }
 }
 

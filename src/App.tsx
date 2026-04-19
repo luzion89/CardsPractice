@@ -1,15 +1,19 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getChallengeForAdvance } from './lib/guandan/challenges'
 import {
+  arrangeHandCards,
+  arrangeHandGroups,
   buildReplaySnapshot,
   DIFFICULTY_META,
   generateGame,
-  powerValue,
   rankToText,
   SEAT_LABELS,
   TEAM_LABELS,
 } from './lib/guandan/engine'
+import { GameManager } from './lib/guandan/gameManager'
+import { DEFAULT_AI_CONFIG } from './lib/guandan/aiService'
 import type {
+  AIConfig,
   Card,
   ChallengeQuestion,
   Difficulty,
@@ -17,10 +21,13 @@ import type {
   PatternPlay,
   ReplaySnapshot,
   Seat,
-  Suit,
 } from './lib/guandan/types'
-import { CardGroup, PlayingCard } from './components/PlayingCard'
+import { CardGroup, PlayingCard, type CardSize } from './components/PlayingCard'
 import './App.css'
+
+/* ================================================================== */
+/*  Types                                                              */
+/* ================================================================== */
 
 type TrainingStats = {
   attempted: number
@@ -37,27 +44,20 @@ type ActiveChallenge = {
 }
 
 type PersistedState = {
-  game: GuandanGame
-  stepIndex: number
   difficulty: Difficulty
-  challengedTrickIndexes: number[]
   stats: TrainingStats
-  endedManually: boolean
+  aiConfig: AIConfig | null
 }
 
 type ModalKind = 'none' | 'settings' | 'info' | 'result'
 type TablePosition = 'top' | 'bottom' | 'left' | 'right'
 
-const STORAGE_KEY = 'guandan-memory-lab-v1'
+/* ================================================================== */
+/*  Constants                                                          */
+/* ================================================================== */
+
+const STORAGE_KEY = 'guandan-memory-lab-v2'
 const SELF_SEAT: Seat = 'south'
-const SUIT_ORDER: Record<Suit, number> = {
-  clubs: 0,
-  diamonds: 1,
-  spades: 2,
-  hearts: 3,
-  black: 4,
-  red: 5,
-}
 const POSITION_BY_SEAT: Record<Seat, TablePosition> = {
   north: 'top',
   west: 'left',
@@ -65,28 +65,21 @@ const POSITION_BY_SEAT: Record<Seat, TablePosition> = {
   south: 'bottom',
 }
 const TABLE_SEATS: Seat[] = ['north', 'west', 'east', 'south']
-
-function challengeTagLabel(tag: string) {
-  switch (tag) {
-    case 'focus-count':
-      return '重点计数'
-    case 'last-trick-pattern':
-    case 'last-trick-winner':
-      return '立即回忆'
-    case 'big-card-count':
-    case 'wild-count':
-    case 'any-rank-count':
-      return '全局计数'
-    case 'recent-trick-detail':
-      return '延迟回忆'
-    case 'partner-awareness':
-      return '搭档判断'
-    default:
-      return '轮次检索'
-  }
+const HAND_GROUP_LABELS: Record<string, string> = {
+  straight: '顺',
+  tube: '连对',
+  plate: '钢板',
+  bomb: '炸',
+  wild: '配',
+  joker: '王',
+  jokerBomb: '天炸',
 }
 
-function loadPersistedState() {
+/* ================================================================== */
+/*  Persistence                                                        */
+/* ================================================================== */
+
+function loadPersisted(): PersistedState | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     if (!raw) return null
@@ -96,65 +89,46 @@ function loadPersistedState() {
   }
 }
 
+function persistSettings(state: PersistedState) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+}
+
 function makeFreshStats(): TrainingStats {
   return { attempted: 0, correct: 0, streak: 0, bestStreak: 0 }
 }
 
-function makeFreshGame() {
-  return generateGame(Date.now() + Math.floor(Math.random() * 1000))
-}
-
-function persist(state: PersistedState) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-}
-
-function sortHandCards(cards: Card[], levelRank: number) {
-  return [...cards].sort((left, right) => {
-    const leftPower = left.rank === levelRank ? 18 : powerValue(left.rank, levelRank)
-    const rightPower = right.rank === levelRank ? 18 : powerValue(right.rank, levelRank)
-    const powerGap = leftPower - rightPower
-    if (powerGap !== 0) {
-      return powerGap
-    }
-
-    const suitGap = SUIT_ORDER[left.suit] - SUIT_ORDER[right.suit]
-    if (suitGap !== 0) {
-      return suitGap
-    }
-
-    return left.deck - right.deck
-  })
-}
-
-function groupHandCards(cards: Card[], levelRank: number) {
-  const groups: { rank: number; cards: Card[] }[] = []
-  for (const card of cards) {
-    const pv = powerValue(card.rank, levelRank)
-    const last = groups[groups.length - 1]
-    if (last && last.rank === pv) {
-      last.cards.push(card)
-    } else {
-      groups.push({ rank: pv, cards: [card] })
-    }
+function challengeTagLabel(tag: string) {
+  switch (tag) {
+    case 'focus-count': return '重点计数'
+    case 'last-trick-pattern':
+    case 'last-trick-winner': return '立即回忆'
+    case 'big-card-count':
+    case 'wild-count':
+    case 'any-rank-count': return '全局计数'
+    case 'recent-trick-detail': return '延迟回忆'
+    case 'partner-awareness': return '搭档判断'
+    default: return '轮次检索'
   }
-  return groups
 }
+
+/* ================================================================== */
+/*  Sub-components                                                     */
+/* ================================================================== */
 
 function remainingHandForSeat(game: GuandanGame, snapshot: ReplaySnapshot, seat: Seat) {
-  const playedCardIds = new Set(
+  const playedIds = new Set(
     snapshot.visibleActions
-      .filter((action) => action.seat === seat)
-      .flatMap((action) => action.play?.cards ?? [])
-      .map((card) => card.id),
+      .filter((a) => a.seat === seat)
+      .flatMap((a) => a.play?.cards ?? [])
+      .map((c) => c.id),
   )
-
-  return sortHandCards(
-    game.players[seat].filter((card) => !playedCardIds.has(card.id)),
+  return arrangeHandCards(
+    game.players[seat].filter((c) => !playedIds.has(c.id)),
     game.levelRank,
   )
 }
 
-function PlayDisplay({ play, levelRank, size = 'sm' }: { play: PatternPlay | null; levelRank: number; size?: 'sm' | 'md' }) {
+function PlayDisplay({ play, levelRank, size = 'sm' }: { play: PatternPlay | null; levelRank: number; size?: CardSize }) {
   if (!play) return <span className="pass-text">过</span>
   return <CardGroup cards={play.cards} levelRank={levelRank} size={size} />
 }
@@ -165,21 +139,23 @@ function SeatBadge({
   isNext,
   isFinished,
   position,
+  thinking,
 }: {
   seat: Seat
   remaining: number
   isNext: boolean
   isFinished: boolean
   position: TablePosition
+  thinking?: boolean
 }) {
   const teamClass = seat === 'south' || seat === 'north' ? 'team-ns' : 'team-ew'
-  const metaText = isFinished ? '已出完' : `剩余 ${remaining} 张`
+  const metaText = isFinished ? '已出完' : `${remaining}张`
 
   return (
-    <div className={`seat-badge ${position} ${teamClass} ${isNext ? 'is-next' : ''} ${isFinished ? 'is-finished' : ''}`}>
+    <div className={`seat-badge ${position} ${teamClass} ${isNext ? 'is-next' : ''} ${isFinished ? 'is-finished' : ''} ${thinking ? 'thinking' : ''}`}>
       <span className="seat-role">{SEAT_LABELS[seat]}</span>
       <span className="seat-meta">{metaText}</span>
-      {isNext ? <span className="seat-status">轮到出牌</span> : null}
+      {thinking && <span className="thinking-dot"><span /><span /><span /></span>}
     </div>
   )
 }
@@ -193,42 +169,29 @@ function TablePlaySlot({
   levelRank: number
   position: TablePosition
 }) {
-  if (play === undefined) {
-    return null
-  }
-
-  const displaySize = position === 'left' || position === 'right' ? 'sm' : 'md'
-
+  if (play === undefined) return null
   return (
     <div className={`table-play-slot ${position} ${play ? 'has-play' : 'is-pass'}`}>
-      <PlayDisplay play={play} levelRank={levelRank} size={displaySize} />
+      <PlayDisplay play={play} levelRank={levelRank} size="sm" />
     </div>
   )
 }
 
 function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
-  const groups = groupHandCards(cards, levelRank)
-  const stackOffset = 15
-  const baseHeight = 78
-
+  const groups = arrangeHandGroups(cards, levelRank)
   return (
     <div className="hand-scroll">
       <div className="hand-rack">
         {groups.map((group) => (
-          <div
-            key={`${group.rank}-${group.cards[0].id}`}
-            className="hand-group"
-            style={{ height: baseHeight + (group.cards.length - 1) * stackOffset }}
-          >
-            {group.cards.map((card, index) => (
-              <div
-                key={card.id}
-                className="hand-card-shell"
-                style={{ top: index * stackOffset, zIndex: index + 1 }}
-              >
-                <PlayingCard card={card} levelRank={levelRank} size="md" />
+          <div key={group.key} className={`hand-group hand-group-${group.kind}`}>
+            {HAND_GROUP_LABELS[group.kind] && <span className="hand-group-chip">{HAND_GROUP_LABELS[group.kind]}</span>}
+            {group.cards.length === 1 ? (
+              <div className="hand-card-shell single-card">
+                <PlayingCard card={group.cards[0]} levelRank={levelRank} size="md" />
               </div>
-            ))}
+            ) : (
+              <CardGroup cards={group.cards} levelRank={levelRank} size="md" />
+            )}
           </div>
         ))}
       </div>
@@ -236,124 +199,183 @@ function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
   )
 }
 
+/* ================================================================== */
+/*  Main App                                                           */
+/* ================================================================== */
+
 function App() {
-  const persisted = loadPersistedState()
-  const [game, setGame] = useState<GuandanGame>(() => persisted?.game ?? makeFreshGame())
-  const [stepIndex, setStepIndex] = useState(() => persisted?.stepIndex ?? 0)
+  const persisted = loadPersisted()
+
+  /* ---- Core state ---- */
+  const [game, setGame] = useState<GuandanGame | null>(null)
+  const [stepIndex, setStepIndex] = useState(0)
   const [difficulty, setDifficulty] = useState<Difficulty>(() => persisted?.difficulty ?? 'starter')
-  const [challengedTrickIndexes, setChallengedTrickIndexes] = useState<number[]>(() => persisted?.challengedTrickIndexes ?? [])
+  const [challengedTrickIndexes, setChallengedTrickIndexes] = useState<number[]>([])
   const [stats, setStats] = useState<TrainingStats>(() => persisted?.stats ?? makeFreshStats())
-  const [endedManually, setEndedManually] = useState(() => persisted?.endedManually ?? false)
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null)
   const [modal, setModal] = useState<ModalKind>('none')
+  const [error, setError] = useState<string | null>(null)
+  const [aiThinking, setAiThinking] = useState(false)
+  const [lastAIReason, setLastAIReason] = useState('')
+  const [thinkingSeat, setThinkingSeat] = useState<Seat | null>(null)
+
+  /* ---- AI config ---- */
+  const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => persisted?.aiConfig ?? null)
+  const [apiKeyInput, setApiKeyInput] = useState(() => persisted?.aiConfig?.apiKey ?? '')
+  const [modelInput, setModelInput] = useState(() => persisted?.aiConfig?.model ?? DEFAULT_AI_CONFIG.model)
+
+  /* ---- Game mode: 'ai' (live AI) or 'local' (pre-generated) ---- */
+  const [gameMode, setGameMode] = useState<'ai' | 'local'>(() => (persisted?.aiConfig?.apiKey ? 'ai' : 'local'))
+
+  /* ---- Refs ---- */
+  const managerRef = useRef<GameManager | null>(null)
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const snapshot = useMemo(() => buildReplaySnapshot(game, stepIndex), [game, stepIndex])
-  const progress = game.actions.length === 0 ? 0 : Math.round((snapshot.stepIndex / game.actions.length) * 100)
+  /* ---- Derived ---- */
+  const snapshot = useMemo(
+    () => (game ? buildReplaySnapshot(game, stepIndex) : null),
+    [game, stepIndex],
+  )
+  const progress = !game ? 0 : game.actions.length > 0 ? Math.round((stepIndex / game.actions.length) * 100) : 0
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
-  const isGameOver = snapshot.isComplete || endedManually
-  const pressureSeat = snapshot.currentTrick?.winningSeat ?? snapshot.currentTrick?.leader ?? snapshot.nextSeat ?? null
-  const allyRemaining = snapshot.remainingCounts.south + snapshot.remainingCounts.north
-  const rivalRemaining = snapshot.remainingCounts.west + snapshot.remainingCounts.east
-  const seedLabel = game.seed.toString(36).slice(-6)
-  const roundLabel = snapshot.currentTrick
-    ? `第 ${snapshot.currentTrick.index + 1} 轮`
-    : snapshot.completedTricks.length > 0
-      ? `已完成 ${snapshot.completedTricks.length} 轮`
-      : '等待开局'
-  const tableNote = isGameOver
-    ? '本局牌谱已经封盘，可以打开战报查看排名与答题表现。'
-    : snapshot.lastAction
-      ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
-      : '整局合法牌谱已预生成，按“下一步”开始回放。'
-  const ownHand = useMemo(() => remainingHandForSeat(game, snapshot, SELF_SEAT), [game, snapshot])
+  const isGameOver = !game || (snapshot?.isComplete ?? false)
+  const pressureSeat = snapshot?.currentTrick?.winningSeat ?? snapshot?.currentTrick?.leader ?? snapshot?.nextSeat ?? null
+  const ownHand = useMemo(
+    () => (game && snapshot ? remainingHandForSeat(game, snapshot, SELF_SEAT) : []),
+    [game, snapshot],
+  )
 
   const currentTrickPlays: Partial<Record<Seat, PatternPlay | null>> = {}
-  if (snapshot.currentTrick) {
+  if (snapshot?.currentTrick) {
     for (const action of snapshot.currentTrick.actions) {
       currentTrickPlays[action.seat] = action.play
     }
   }
 
-  const latestTricks = snapshot.completedTricks.slice(-5).reverse()
-  const finishedSeats = (Object.entries(snapshot.remainingCounts) as Array<[Seat, number]>)
-    .filter(([, count]) => count === 0)
-    .map(([seat]) => seat)
-
-  const debouncedPersist = useCallback((state: PersistedState) => {
-    if (persistTimer.current) clearTimeout(persistTimer.current)
-    persistTimer.current = setTimeout(() => persist(state), 120)
-  }, [])
+  /* ---- Persist settings ---- */
+  const debouncedPersist = useCallback(
+    (state: PersistedState) => {
+      if (persistTimer.current) clearTimeout(persistTimer.current)
+      persistTimer.current = setTimeout(() => persistSettings(state), 200)
+    },
+    [],
+  )
 
   useEffect(() => {
-    debouncedPersist({ game, stepIndex: snapshot.stepIndex, difficulty, challengedTrickIndexes, stats, endedManually })
-  }, [challengedTrickIndexes, debouncedPersist, difficulty, endedManually, game, snapshot.stepIndex, stats])
+    debouncedPersist({ difficulty, stats, aiConfig })
+  }, [debouncedPersist, difficulty, stats, aiConfig])
 
-  function handleNewGame() {
-    startTransition(() => {
-      setGame(makeFreshGame())
+  /* ---- Game actions ---- */
+
+  function startNewGame() {
+    setError(null)
+    setActiveChallenge(null)
+    setChallengedTrickIndexes([])
+    setLastAIReason('')
+
+    if (gameMode === 'ai' && aiConfig?.apiKey) {
+      const mgr = new GameManager(aiConfig)
+      managerRef.current = mgr
+      const state = mgr.getState()
+      setGame(state.game)
       setStepIndex(0)
-      setChallengedTrickIndexes([])
-      setEndedManually(false)
-      setActiveChallenge(null)
       setModal('none')
-    })
+    } else {
+      // Local fallback mode
+      managerRef.current = null
+      const g = generateGame(Date.now() + Math.floor(Math.random() * 1000))
+      setGame(g)
+      setStepIndex(0)
+      setModal('none')
+    }
   }
 
-  function handleEndGame() {
-    setEndedManually(true)
-    setActiveChallenge(null)
-    setModal('result')
+  async function handleNext() {
+    if (activeChallenge || isGameOver || aiThinking) return
+
+    if (managerRef.current && gameMode === 'ai') {
+      // AI mode: generate next move
+      const mgr = managerRef.current
+      setAiThinking(true)
+      setThinkingSeat(mgr.getState().currentSeat)
+      setError(null)
+      try {
+        await mgr.playNextMove()
+        const state = mgr.getState()
+        setLastAIReason(state.lastAIReason)
+
+        const newGame = state.game
+        const newStep = newGame.actions.length
+
+        // Check for challenge
+        const planned = getChallengeForAdvance(
+          newGame,
+          stepIndex,
+          newStep,
+          difficulty,
+          challengedTrickIndexes,
+        )
+
+        startTransition(() => {
+          setGame(newGame)
+          setStepIndex(newStep)
+
+          if (planned) {
+            setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+            setActiveChallenge({
+              trickIndex: planned.trickIndex,
+              question: planned.question,
+              selectedIndex: null,
+              isCorrect: null,
+            })
+          } else if (state.phase === 'finished') {
+            setModal('result')
+          }
+        })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setAiThinking(false)
+        setThinkingSeat(null)
+      }
+    } else if (game) {
+      // Local mode: step through pre-generated game
+      const nextStep = Math.min(game.actions.length, stepIndex + 1)
+      const planned = getChallengeForAdvance(game, stepIndex, nextStep, difficulty, challengedTrickIndexes)
+
+      startTransition(() => {
+        setStepIndex(nextStep)
+        if (planned) {
+          setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+          setActiveChallenge({
+            trickIndex: planned.trickIndex,
+            question: planned.question,
+            selectedIndex: null,
+            isCorrect: null,
+          })
+        } else if (nextStep >= game.actions.length) {
+          setModal('result')
+        }
+      })
+    }
   }
 
   function handlePrevious() {
-    if (activeChallenge || snapshot.stepIndex <= 0) return
-    startTransition(() => setStepIndex((value) => Math.max(0, value - 1)))
-  }
-
-  function handleNext() {
-    if (activeChallenge || endedManually || snapshot.isComplete) return
-
-    const nextStep = Math.min(game.actions.length, snapshot.stepIndex + 1)
-    const plannedChallenge = getChallengeForAdvance(
-      game,
-      snapshot.stepIndex,
-      nextStep,
-      difficulty,
-      challengedTrickIndexes,
-    )
-
-    startTransition(() => {
-      setStepIndex(nextStep)
-
-      if (plannedChallenge) {
-        setChallengedTrickIndexes((value) => [...value, plannedChallenge.trickIndex])
-        setActiveChallenge({
-          trickIndex: plannedChallenge.trickIndex,
-          question: plannedChallenge.question,
-          selectedIndex: null,
-          isCorrect: null,
-        })
-        return
-      }
-
-      if (nextStep >= game.actions.length) {
-        setModal('result')
-      }
-    })
+    if (activeChallenge || !game || stepIndex <= 0) return
+    startTransition(() => setStepIndex((v) => Math.max(0, v - 1)))
   }
 
   function handleSelectAnswer(index: number) {
     if (!activeChallenge || activeChallenge.selectedIndex !== null) return
     const isCorrect = index === activeChallenge.question.correctIndex
     setActiveChallenge({ ...activeChallenge, selectedIndex: index, isCorrect })
-    setStats((value) => {
-      const nextStreak = isCorrect ? value.streak + 1 : 0
+    setStats((v) => {
+      const nextStreak = isCorrect ? v.streak + 1 : 0
       return {
-        attempted: value.attempted + 1,
-        correct: value.correct + (isCorrect ? 1 : 0),
+        attempted: v.attempted + 1,
+        correct: v.correct + (isCorrect ? 1 : 0),
         streak: nextStreak,
-        bestStreak: Math.max(value.bestStreak, nextStreak),
+        bestStreak: Math.max(v.bestStreak, nextStreak),
       }
     })
   }
@@ -361,86 +383,174 @@ function App() {
   function handleContinueAfterChallenge() {
     if (!activeChallenge || activeChallenge.selectedIndex === null) return
     setActiveChallenge(null)
-    if (stepIndex >= game.actions.length) {
+    if (game && stepIndex >= game.actions.length) {
       setModal('result')
     }
   }
 
+  function handleSaveAIConfig() {
+    if (!apiKeyInput.trim()) {
+      setAiConfig(null)
+      setGameMode('local')
+      return
+    }
+    const config: AIConfig = {
+      apiKey: apiKeyInput.trim(),
+      model: modelInput.trim() || DEFAULT_AI_CONFIG.model,
+      baseUrl: DEFAULT_AI_CONFIG.baseUrl,
+    }
+    setAiConfig(config)
+    setGameMode('ai')
+  }
+
+  /* ---- Computed display ---- */
+  const roundLabel = snapshot?.currentTrick
+    ? `第 ${snapshot.currentTrick.index + 1} 轮`
+    : snapshot && snapshot.completedTricks.length > 0
+      ? `已完成 ${snapshot.completedTricks.length} 轮`
+      : '等待开局'
+
+  const allyRemaining = (snapshot?.remainingCounts.south ?? 27) + (snapshot?.remainingCounts.north ?? 27)
+  const rivalRemaining = (snapshot?.remainingCounts.west ?? 27) + (snapshot?.remainingCounts.east ?? 27)
+
+  const latestTricks = snapshot?.completedTricks.slice(-5).reverse() ?? []
+  const finishedSeats = snapshot
+    ? (Object.entries(snapshot.remainingCounts) as Array<[Seat, number]>)
+        .filter(([, c]) => c === 0)
+        .map(([s]) => s)
+    : []
+
+  const tableNote = aiThinking
+    ? `${pressureSeat ? SEAT_LABELS[pressureSeat] : 'AI'} 正在思考...`
+    : lastAIReason
+      ? `AI: ${lastAIReason}`
+      : isGameOver && game
+        ? '本局已结束，可查看战报或开始新牌局。'
+        : !game
+          ? '点击"新牌局"开始游戏。'
+          : snapshot?.lastAction
+            ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
+            : gameMode === 'ai'
+              ? '牌局已开始，点击"下一步"让AI出牌。'
+              : '整局牌谱已预生成，按"下一步"开始回放。'
+
+  /* ---- Landing screen (no game) ---- */
+  if (!game) {
+    return (
+      <div className="app-root landing">
+        <div className="landing-card">
+          <div className="landing-icon">🃏</div>
+          <h1 className="landing-title">掼蛋记牌训练</h1>
+          <p className="landing-sub">AI驱动的掼蛋牌局回放 · 记牌挑战训练</p>
+
+          <div className="landing-config">
+            <label className="config-label">
+              <span>OpenRouter API Key</span>
+              <input
+                type="password"
+                className="config-input"
+                placeholder="sk-or-..."
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+              />
+            </label>
+            <label className="config-label">
+              <span>AI模型</span>
+              <input
+                type="text"
+                className="config-input"
+                placeholder={DEFAULT_AI_CONFIG.model}
+                value={modelInput}
+                onChange={(e) => setModelInput(e.target.value)}
+              />
+            </label>
+            <div className="landing-actions">
+              <button
+                type="button"
+                className="ctrl-btn primary"
+                onClick={() => {
+                  handleSaveAIConfig()
+                  startNewGame()
+                }}
+              >
+                {apiKeyInput.trim() ? '开始AI对局' : '本地模式开始'}
+              </button>
+            </div>
+            <p className="landing-hint">
+              {apiKeyInput.trim()
+                ? '将使用OpenRouter AI驱动四家出牌'
+                : '无API Key将使用本地预生成牌局（离线可用）'}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  /* ---- Main game UI ---- */
   return (
     <div className="app-root">
+      {/* Header */}
       <header className="top-bar">
-        <div className="hud-cluster">
+        <div className="hud-left">
           <div className="scoreboard">
-            <div className="score-card ally">
+            <div className="score-cell ally">
               <span className="score-label">我方</span>
               <strong className="score-value">{allyRemaining}</strong>
             </div>
-            <div className="score-card rival">
+            <div className="score-cell rival">
               <span className="score-label">对方</span>
               <strong className="score-value">{rivalRemaining}</strong>
             </div>
-            <div className="score-card round">
+            <div className="score-cell round-cell">
               <span className="score-label">轮次</span>
-              <strong className="score-value">{snapshot.completedTricks.length + (snapshot.currentTrick ? 1 : 0)}</strong>
+              <strong className="score-value">{(snapshot?.completedTricks.length ?? 0) + (snapshot?.currentTrick ? 1 : 0)}</strong>
             </div>
           </div>
-
-          <div className="title-block">
-            <span className="kicker">MEMORY TABLE</span>
-            <div className="title-row">
-              <strong className="app-title">掼蛋记牌台</strong>
-              <span className="difficulty-chip">{DIFFICULTY_META[difficulty].label}</span>
-            </div>
-            <div className="title-meta">
+          <div className="game-info">
+            <strong className="app-title">掼蛋记牌台</strong>
+            <div className="info-tags">
               <span className="tag">{roundLabel}</span>
-              <span className="tag">{pressureSeat ? `${SEAT_LABELS[pressureSeat]}掌牌` : '等待领牌'}</span>
-              <span className="tag">{SEAT_LABELS[game.startingSeat]}起手</span>
-              <span className="tag">#{seedLabel}</span>
+              <span className="tag level-tag">级牌 {rankToText(game.levelRank)}</span>
+              <span className="tag diff-tag">{DIFFICULTY_META[difficulty].label}</span>
+              {gameMode === 'ai' && <span className="tag ai-tag">AI</span>}
+              {progress > 0 && <span className="tag">{progress}%</span>}
             </div>
           </div>
         </div>
-        <div className="toolbar-block">
-          <div className="top-right">
-            <button type="button" className="top-action" onClick={() => setModal(modal === 'settings' ? 'none' : 'settings')}>
-              设置
-            </button>
-            <button type="button" className="top-action" onClick={() => setModal(modal === 'info' ? 'none' : 'info')}>
-              回顾
-            </button>
-            {isGameOver ? (
-              <button type="button" className="top-action accent-glow" onClick={() => setModal('result')}>
-                战报
-              </button>
-            ) : null}
-          </div>
+        <div className="hud-right">
+          <button type="button" className="hdr-btn" onClick={() => setModal(modal === 'settings' ? 'none' : 'settings')}>⚙️</button>
+          <button type="button" className="hdr-btn" onClick={() => setModal(modal === 'info' ? 'none' : 'info')}>📋</button>
+          {isGameOver && <button type="button" className="hdr-btn glow" onClick={() => setModal('result')}>🏆</button>}
         </div>
       </header>
 
+      {/* Error banner */}
+      {error && (
+        <div className="error-banner" onClick={() => setError(null)}>
+          <span>⚠️ {error}</span>
+          <button type="button" onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
+
+      {/* Table */}
       <section className="table-scene">
-        <div className="table-stage">
+        <div className="table-felt">
+          {/* Seat badges */}
           {TABLE_SEATS.map((seat) => (
             <SeatBadge
               key={seat}
               seat={seat}
-              remaining={snapshot.remainingCounts[seat]}
+              remaining={snapshot?.remainingCounts[seat] ?? 27}
               position={POSITION_BY_SEAT[seat]}
-              isNext={snapshot.nextSeat === seat && !isGameOver}
+              isNext={snapshot?.nextSeat === seat && !isGameOver}
               isFinished={finishedSeats.includes(seat)}
+              thinking={aiThinking && thinkingSeat === seat}
             />
           ))}
 
-          <div className="table-felt">
-            <span className="table-level-badge">级牌 {rankToText(game.levelRank)}</span>
-            <div className="table-orbit" />
-            <div className="table-watermark" aria-hidden="true">
-              <span className="table-watermark-kicker">回放牌桌</span>
-              <strong className="table-watermark-title">掼蛋记牌训练</strong>
-              <span className="table-watermark-copy">完整牌局回放 · 手游式视角</span>
-            </div>
-            <div className="table-turn-chip">
-              <span>当前节奏</span>
-              <strong>{pressureSeat ? SEAT_LABELS[pressureSeat] : '待开局'}</strong>
-            </div>
+          {/* Play slots */}
+          <div className="play-area">
             {TABLE_SEATS.map((seat) => (
               <TablePlaySlot
                 key={`${seat}-play`}
@@ -450,77 +560,78 @@ function App() {
               />
             ))}
           </div>
-        </div>
 
-        <div className="table-status-row">
-          <p className="table-status">{tableNote}</p>
-          <div className="progress-block">
-            <span className="progress-label">牌局进度 {progress}%</span>
-            <div className="progress-container">
-              <div className="progress-fill" style={{ width: `${progress}%` }} />
-            </div>
+          {/* Center watermark */}
+          <div className="table-center-info">
+            <span className="table-note">{tableNote}</span>
           </div>
         </div>
-
-        <section className="hand-panel">
-          <div className="hand-head">
-            <h3>我的本局手牌</h3>
-            <span className="hand-count">{ownHand.length}/{game.players[SELF_SEAT].length} 张</span>
-          </div>
-          {ownHand.length > 0 ? (
-            <HandRack cards={ownHand} levelRank={game.levelRank} />
-          ) : (
-            <p className="hand-empty">当前自己已经出完所有牌，可以直接看战报或重新开一局。</p>
-          )}
-        </section>
       </section>
 
+      {/* Hand panel */}
+      <section className="hand-panel">
+        <div className="hand-head">
+          <h3>手牌</h3>
+          <span className="hand-count">{ownHand.length} / {game.players[SELF_SEAT].length}</span>
+        </div>
+        {ownHand.length > 0 ? (
+          <HandRack cards={ownHand} levelRank={game.levelRank} />
+        ) : (
+          <p className="hand-empty">已出完所有牌</p>
+        )}
+      </section>
+
+      {/* Controls */}
       <section className="control-dock">
         <div className="mini-stats">
-          <span><strong>{stats.attempted}</strong> 已答题</span>
+          <span><strong>{stats.attempted}</strong> 答题</span>
           <span><strong>{accuracy}%</strong> 正确率</span>
-          <span><strong>{stats.streak}</strong> 当前连对</span>
-          <span><strong>{snapshot.completedTricks.length}</strong> 已收轮</span>
+          <span><strong>{stats.streak}</strong> 连对</span>
         </div>
-
-        <section className="controls">
-          <button type="button" className="ctrl-btn" onClick={handlePrevious} disabled={snapshot.stepIndex <= 0 || !!activeChallenge}>上一步</button>
-          <button type="button" className="ctrl-btn primary" onClick={handleNext} disabled={isGameOver || !!activeChallenge}>下一步</button>
-          <button type="button" className="ctrl-btn" onClick={handleEndGame} disabled={isGameOver}>结束</button>
-          <button type="button" className="ctrl-btn accent" onClick={handleNewGame}>新牌局</button>
-        </section>
+        <div className="controls">
+          <button type="button" className="ctrl-btn" onClick={handlePrevious} disabled={stepIndex <= 0 || !!activeChallenge}>
+            ◀ 上一步
+          </button>
+          <button type="button" className="ctrl-btn primary" onClick={handleNext} disabled={isGameOver || !!activeChallenge || aiThinking}>
+            {aiThinking ? '思考中...' : '下一步 ▶'}
+          </button>
+          <button type="button" className="ctrl-btn accent" onClick={startNewGame} disabled={aiThinking}>
+            新牌局
+          </button>
+        </div>
       </section>
 
+      {/* Challenge modal */}
       {activeChallenge && (
         <div className="overlay">
           <div className="dialog challenge-dialog">
-            <h3>记牌挑战</h3>
+            <h3>🧠 记牌挑战</h3>
             <div className="challenge-meta">
-              <p className="challenge-tag">{challengeTagLabel(activeChallenge.question.tag)} · 第 {activeChallenge.trickIndex + 1} 轮后暂停</p>
-              <p className="challenge-difficulty">题型难度 · {DIFFICULTY_META[activeChallenge.question.difficulty].label}</p>
+              <span className="challenge-tag">{challengeTagLabel(activeChallenge.question.tag)}</span>
+              <span className="challenge-difficulty">{DIFFICULTY_META[activeChallenge.question.difficulty].label}</span>
             </div>
             <p className="q-prompt">{activeChallenge.question.prompt}</p>
             <div className="choice-grid">
-              {activeChallenge.question.options.map((option, index) => {
-                const chosen = activeChallenge.selectedIndex === index
-                const correct = activeChallenge.selectedIndex !== null && index === activeChallenge.question.correctIndex
+              {activeChallenge.question.options.map((opt, i) => {
+                const chosen = activeChallenge.selectedIndex === i
+                const correct = activeChallenge.selectedIndex !== null && i === activeChallenge.question.correctIndex
                 const wrong = chosen && !activeChallenge.isCorrect
                 return (
                   <button
                     type="button"
-                    key={`${option}-${index}`}
+                    key={`${opt}-${i}`}
                     className={`choice ${chosen ? 'chosen' : ''} ${correct ? 'correct' : ''} ${wrong ? 'wrong' : ''}`}
-                    onClick={() => handleSelectAnswer(index)}
+                    onClick={() => handleSelectAnswer(i)}
                     disabled={activeChallenge.selectedIndex !== null}
                   >
-                    {option}
+                    {opt}
                   </button>
                 )
               })}
             </div>
             {activeChallenge.selectedIndex !== null && (
               <div className={`result-box ${activeChallenge.isCorrect ? 'ok' : 'fail'}`}>
-                <strong>{activeChallenge.isCorrect ? '✓ 正确' : '✗ 错误'}</strong>
+                <strong>{activeChallenge.isCorrect ? '✓ 正确！' : '✗ 错误'}</strong>
                 <p>{activeChallenge.question.explanation}</p>
                 <button type="button" className="ctrl-btn primary full" onClick={handleContinueAfterChallenge}>继续</button>
               </div>
@@ -529,23 +640,50 @@ function App() {
         </div>
       )}
 
+      {/* Settings modal */}
       {modal === 'settings' && (
-        <div className="overlay" onClick={(event) => { if (event.target === event.currentTarget) setModal('none') }}>
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setModal('none') }}>
           <div className="dialog">
-            <div className="dialog-head"><h3>训练设置</h3><button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button></div>
-            <div className="dialog-section compact-top">
+            <div className="dialog-head">
+              <h3>设置</h3>
+              <button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button>
+            </div>
+
+            <div className="dialog-section">
+              <h4>AI配置</h4>
+              <label className="config-label">
+                <span>OpenRouter API Key</span>
+                <input type="password" className="config-input" placeholder="sk-or-..." value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} />
+              </label>
+              <label className="config-label">
+                <span>AI模型</span>
+                <input type="text" className="config-input" placeholder={DEFAULT_AI_CONFIG.model} value={modelInput} onChange={(e) => setModelInput(e.target.value)} />
+              </label>
+              <button type="button" className="ctrl-btn small" onClick={handleSaveAIConfig}>
+                保存AI设置
+              </button>
+              <p className="settings-hint">
+                {aiConfig?.apiKey ? `当前模式: AI (${aiConfig.model})` : '当前模式: 本地离线'}
+              </p>
+            </div>
+
+            <div className="dialog-section">
               <h4>题型难度</h4>
-              <p className="settings-copy">当前为 {DIFFICULTY_META[difficulty].label}。入门难度下，如果本轮出现 A、K、王或级牌，收轮后会优先追问对应剩余张数。</p>
+              <div className="diff-list">
+                {(Object.entries(DIFFICULTY_META) as Array<[Difficulty, (typeof DIFFICULTY_META)[Difficulty]]>).map(([key, meta]) => (
+                  <button
+                    type="button"
+                    key={key}
+                    className={`diff-item ${difficulty === key ? 'active' : ''}`}
+                    onClick={() => setDifficulty(key)}
+                  >
+                    <strong>{meta.label}</strong>
+                    <small>{meta.summary}</small>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="diff-list">
-              {(Object.entries(DIFFICULTY_META) as Array<[Difficulty, (typeof DIFFICULTY_META)[Difficulty]]>).map(([key, meta]) => (
-                <button type="button" key={key} className={`diff-item ${difficulty === key ? 'active' : ''}`}
-                  onClick={() => setDifficulty(key)}>
-                  <strong>{meta.label}</strong>
-                  <small>{meta.summary}</small>
-                </button>
-              ))}
-            </div>
+
             <div className="dialog-section">
               <h4>训练统计</h4>
               <div className="stat-row">
@@ -560,18 +698,22 @@ function App() {
         </div>
       )}
 
+      {/* Review modal */}
       {modal === 'info' && (
-        <div className="overlay" onClick={(event) => { if (event.target === event.currentTarget) setModal('none') }}>
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setModal('none') }}>
           <div className="dialog">
-            <div className="dialog-head"><h3>轮次回顾</h3><button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button></div>
-            {snapshot.currentTrick && snapshot.currentTrick.actions.length > 0 && (
+            <div className="dialog-head">
+              <h3>轮次回顾</h3>
+              <button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button>
+            </div>
+            {snapshot?.currentTrick && snapshot.currentTrick.actions.length > 0 && (
               <div className="dialog-section">
                 <h4>当前轮</h4>
                 <div className="action-flow">
                   {snapshot.currentTrick.actions.map((action) => (
                     <div key={action.index} className="action-item">
                       <span className="action-who">{SEAT_LABELS[action.seat]}</span>
-                      <PlayDisplay play={action.play} levelRank={game.levelRank} size="sm" />
+                      <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
                       <span className="action-rem">余{action.handCountAfter}</span>
                     </div>
                   ))}
@@ -591,7 +733,7 @@ function App() {
                       {trick.actions.map((action) => (
                         <div key={action.index} className="action-item">
                           <span className="action-who">{SEAT_LABELS[action.seat]}</span>
-                          <PlayDisplay play={action.play} levelRank={game.levelRank} size="sm" />
+                          <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
                         </div>
                       ))}
                     </div>
@@ -599,31 +741,41 @@ function App() {
                 ))}
               </div>
             )}
-            {latestTricks.length === 0 && !snapshot.currentTrick && (
-              <p className="empty-hint">至少看完一轮后才有回顾内容。</p>
+            {latestTricks.length === 0 && !snapshot?.currentTrick && (
+              <p className="empty-hint">至少完成一轮后才有回顾内容。</p>
             )}
           </div>
         </div>
       )}
 
+      {/* Result modal */}
       {modal === 'result' && (
-        <div className="overlay" onClick={(event) => { if (event.target === event.currentTarget) setModal('none') }}>
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setModal('none') }}>
           <div className="dialog">
-            <div className="dialog-head"><h3>本局总结</h3><button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button></div>
+            <div className="dialog-head">
+              <h3>本局总结</h3>
+              <button type="button" className="close-btn" onClick={() => setModal('none')}>✕</button>
+            </div>
             <div className="dialog-section">
               <h4>完成排名</h4>
               <div className="finish-list">
-                {(snapshot.isComplete ? game.finishOrder : []).map((item) => (
+                {(snapshot?.isComplete ? game.finishOrder : []).map((item) => (
                   <div key={item.seat} className="finish-item">
                     <span className="finish-place">#{item.place}</span>
                     <span>{SEAT_LABELS[item.seat]}</span>
                     <span className="finish-team">{TEAM_LABELS[item.seat]}</span>
                   </div>
                 ))}
-                {!snapshot.isComplete && (
-                  <p className="empty-hint">手动结束，未产生完整排名。当前剩余：
-                    {(Object.entries(snapshot.remainingCounts) as Array<[Seat, number]>)
-                      .filter(([, count]) => count > 0).map(([seat, count]) => `${SEAT_LABELS[seat]} ${count}张`).join('、')}</p>
+                {!snapshot?.isComplete && (
+                  <p className="empty-hint">
+                    游戏进行中。当前剩余：
+                    {snapshot
+                      ? (Object.entries(snapshot.remainingCounts) as Array<[Seat, number]>)
+                          .filter(([, c]) => c > 0)
+                          .map(([s, c]) => `${SEAT_LABELS[s]} ${c}张`)
+                          .join('、')
+                      : '—'}
+                  </p>
                 )}
               </div>
             </div>
@@ -632,15 +784,18 @@ function App() {
               <div className="result-stats">
                 <div><span>答题数</span><strong>{stats.attempted}</strong></div>
                 <div><span>正确率</span><strong>{accuracy}%</strong></div>
-                <div><span>当前连对</span><strong>{stats.streak}</strong></div>
-                <div><span>最佳连对</span><strong>{stats.bestStreak}</strong></div>
+                <div><span>连对</span><strong>{stats.streak}</strong></div>
+                <div><span>最佳</span><strong>{stats.bestStreak}</strong></div>
               </div>
             </div>
             <div className="dialog-section">
               <h4>本局信息</h4>
-              <p className="meta-text">级牌 {rankToText(game.levelRank)} · {SEAT_LABELS[game.startingSeat]}起手 · {game.actions.length}步 · {game.tricks.length}轮 · #{game.seed.toString(36).slice(-6)}</p>
+              <p className="meta-text">
+                级牌 {rankToText(game.levelRank)} · {SEAT_LABELS[game.startingSeat]}起手 · {game.actions.length}步 · {game.tricks.length}轮
+                {gameMode === 'ai' ? ' · AI驱动' : ' · 本地模式'}
+              </p>
             </div>
-            <button type="button" className="ctrl-btn accent full" onClick={handleNewGame}>开始新牌局</button>
+            <button type="button" className="ctrl-btn accent full" onClick={startNewGame}>开始新牌局</button>
           </div>
         </div>
       )}

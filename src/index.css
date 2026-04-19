@@ -1,29 +1,46 @@
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
 
 :root {
-  --bg-color: #fdf6e3;
-  --panel-bg: #fff;
-  --table-bg: #a8e6cf;
-  --table-border: #16a085;
-  --ink: #2c3e50;
-  --ink-soft: #7f8c8d;
-  --accent: #f39c12;
-  --accent-light: rgba(243, 156, 18, 0.2);
-  --btn-primary: #3498db;
-  --btn-primary-shadow: #2980b9;
-  --btn-accent: #e74c3c;
-  --btn-accent-shadow: #c0392b;
-  --btn-ok: #2ecc71;
-  --border-thick: 3px solid var(--ink);
-  --border-thin: 2px solid var(--ink);
-  --shadow-brutal: 4px 6px 0px var(--ink);
-  --shadow-hover: 2px 3px 0px var(--ink);
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 8px;
-  
-  --display-font: 'Nunito', 'Microsoft Yahei', system-ui, sans-serif;
-  --body-font: 'Nunito', 'Microsoft Yahei', system-ui, sans-serif;
+  /* Table colors */
+  --table-bg: #0b6e3d;
+  --table-border: #084d2a;
+  --table-felt: linear-gradient(
+    145deg,
+    #0d7a44 0%,
+    #0b6e3d 40%,
+    #096432 100%
+  );
+  --table-shadow: inset 0 2px 40px rgba(0, 0, 0, 0.3);
+
+  /* UI colors */
+  --bg: #1a1a2e;
+  --bg-soft: #16213e;
+  --panel: #0f3460;
+  --panel-light: #1a4a7a;
+  --surface: #fff;
+  --ink: #e4e4e4;
+  --ink-soft: #a0aab4;
+  --accent: #e6a817;
+  --accent-light: rgba(230, 168, 23, 0.2);
+  --red: #e74c3c;
+  --green: #2ecc71;
+  --blue: #3498db;
+
+  /* Card colors */
+  --card-bg: #ffffff;
+  --card-border: #d0d0d0;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  --card-red: #c0392b;
+  --card-black: #1a1a2e;
+
+  /* Typography */
+  --font: 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --mono: 'Menlo', 'Consolas', monospace;
+
+  /* Spacing */
+  --radius: 8px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
 }
 
 * {
@@ -33,13 +50,14 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font: 16px/1.55 var(--body-font);
+  font: 14px/1.5 var(--font);
+  font-weight: 500;
   color: var(--ink);
-  background-color: var(--bg-color);
-  background-image: repeating-linear-gradient(45deg, var(--accent-light) 25%, transparent 25%, transparent 75%, var(--accent-light) 75%, var(--accent-light)), repeating-linear-gradient(45deg, var(--accent-light) 25%, var(--bg-color) 25%, var(--bg-color) 75%, var(--accent-light) 75%, var(--accent-light));
-  background-position: 0 0, 20px 20px;
-  background-size: 40px 40px;
-  font-weight: 800;
+  background: var(--bg);
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 #root {
@@ -49,3 +67,9 @@ body {
 h1, h2, h3, h4, p { margin: 0; }
 button, input { font: inherit; }
 button { cursor: pointer; }
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
