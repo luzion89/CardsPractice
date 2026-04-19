@@ -1,17 +1,16 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getChallengeForAdvance } from './lib/guandan/challenges'
 import {
-  arrangeHandCards,
-  arrangeHandGroups,
   buildReplaySnapshot,
   DIFFICULTY_META,
   generateGame,
   rankToText,
   SEAT_LABELS,
+  sortHandForDisplay,
   TEAM_LABELS,
 } from './lib/guandan/engine'
 import { GameManager } from './lib/guandan/gameManager'
-import { DEFAULT_AI_CONFIG } from './lib/guandan/aiService'
+import { DEFAULT_AI_CONFIG, testOpenRouterConnection } from './lib/guandan/aiService'
 import type {
   AIConfig,
   Card,
@@ -65,15 +64,6 @@ const POSITION_BY_SEAT: Record<Seat, TablePosition> = {
   south: 'bottom',
 }
 const TABLE_SEATS: Seat[] = ['north', 'west', 'east', 'south']
-const HAND_GROUP_LABELS: Record<string, string> = {
-  straight: '顺',
-  tube: '连对',
-  plate: '钢板',
-  bomb: '炸',
-  wild: '配',
-  joker: '王',
-  jokerBomb: '天炸',
-}
 
 /* ================================================================== */
 /*  Persistence                                                        */
@@ -122,7 +112,7 @@ function remainingHandForSeat(game: GuandanGame, snapshot: ReplaySnapshot, seat:
       .flatMap((a) => a.play?.cards ?? [])
       .map((c) => c.id),
   )
-  return arrangeHandCards(
+  return sortHandForDisplay(
     game.players[seat].filter((c) => !playedIds.has(c.id)),
     game.levelRank,
   )
@@ -178,20 +168,12 @@ function TablePlaySlot({
 }
 
 function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
-  const groups = arrangeHandGroups(cards, levelRank)
   return (
     <div className="hand-scroll">
-      <div className="hand-rack">
-        {groups.map((group) => (
-          <div key={group.key} className={`hand-group hand-group-${group.kind}`}>
-            {HAND_GROUP_LABELS[group.kind] && <span className="hand-group-chip">{HAND_GROUP_LABELS[group.kind]}</span>}
-            {group.cards.length === 1 ? (
-              <div className="hand-card-shell single-card">
-                <PlayingCard card={group.cards[0]} levelRank={levelRank} size="md" />
-              </div>
-            ) : (
-              <CardGroup cards={group.cards} levelRank={levelRank} size="md" />
-            )}
+      <div className="hand-rack hand-rack-flat">
+        {cards.map((card) => (
+          <div key={card.id} className="hand-card-shell">
+            <PlayingCard card={card} levelRank={levelRank} size="md" />
           </div>
         ))}
       </div>
@@ -223,6 +205,8 @@ function App() {
   const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => persisted?.aiConfig ?? null)
   const [apiKeyInput, setApiKeyInput] = useState(() => persisted?.aiConfig?.apiKey ?? '')
   const [modelInput, setModelInput] = useState(() => persisted?.aiConfig?.model ?? DEFAULT_AI_CONFIG.model)
+  const [aiConnectionStatus, setAiConnectionStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
+  const [aiConnectionMessage, setAiConnectionMessage] = useState('')
 
   /* ---- Game mode: 'ai' (live AI) or 'local' (pre-generated) ---- */
   const [gameMode, setGameMode] = useState<'ai' | 'local'>(() => (persisted?.aiConfig?.apiKey ? 'ai' : 'local'))
@@ -265,16 +249,69 @@ function App() {
     debouncedPersist({ difficulty, stats, aiConfig })
   }, [debouncedPersist, difficulty, stats, aiConfig])
 
+  const markConnectionAsDirty = useCallback(() => {
+    setAiConnectionStatus('idle')
+    setAiConnectionMessage('')
+  }, [])
+
+  const handleApiKeyInputChange = useCallback((value: string) => {
+    setApiKeyInput(value)
+    markConnectionAsDirty()
+  }, [markConnectionAsDirty])
+
+  const handleModelInputChange = useCallback((value: string) => {
+    setModelInput(value)
+    markConnectionAsDirty()
+  }, [markConnectionAsDirty])
+
+  const buildAIConfigFromInputs = useCallback((): AIConfig | null => {
+    if (!apiKeyInput.trim()) {
+      return null
+    }
+    return {
+      apiKey: apiKeyInput.trim(),
+      model: modelInput.trim() || DEFAULT_AI_CONFIG.model,
+      baseUrl: DEFAULT_AI_CONFIG.baseUrl,
+    }
+  }, [apiKeyInput, modelInput])
+
+  const handleTestAIConnection = useCallback(async () => {
+    const config = buildAIConfigFromInputs()
+    if (!config) {
+      setAiConnectionStatus('fail')
+      setAiConnectionMessage('请先填写有效的 API Key。')
+      return
+    }
+
+    setAiConnectionStatus('testing')
+    setAiConnectionMessage('正在检测 OpenRouter 连通性...')
+    setError(null)
+
+    try {
+      const result = await testOpenRouterConnection(config)
+      setAiConnectionStatus(result.ok ? 'ok' : 'fail')
+      setAiConnectionMessage(result.message)
+    } catch (err) {
+      setAiConnectionStatus('fail')
+      setAiConnectionMessage(err instanceof Error ? err.message : String(err))
+    }
+  }, [buildAIConfigFromInputs])
+
   /* ---- Game actions ---- */
 
-  function startNewGame() {
+  function startNewGame(options?: { mode?: 'ai' | 'local'; config?: AIConfig | null }) {
+    const resolvedMode = options?.mode ?? gameMode
+    const resolvedConfig = options?.config ?? aiConfig
+
     setError(null)
     setActiveChallenge(null)
     setChallengedTrickIndexes([])
     setLastAIReason('')
+    setAiThinking(false)
+    setThinkingSeat(null)
 
-    if (gameMode === 'ai' && aiConfig?.apiKey) {
-      const mgr = new GameManager(aiConfig)
+    if (resolvedMode === 'ai' && resolvedConfig?.apiKey) {
+      const mgr = new GameManager(resolvedConfig)
       managerRef.current = mgr
       const state = mgr.getState()
       setGame(state.game)
@@ -287,6 +324,10 @@ function App() {
       setGame(g)
       setStepIndex(0)
       setModal('none')
+
+      if (resolvedMode === 'ai') {
+        setError('未检测到可用 AI 配置，已切换为本地模式。')
+      }
     }
   }
 
@@ -389,18 +430,19 @@ function App() {
   }
 
   function handleSaveAIConfig() {
-    if (!apiKeyInput.trim()) {
+    const config = buildAIConfigFromInputs()
+    if (!config) {
       setAiConfig(null)
       setGameMode('local')
+      setAiConnectionStatus('idle')
+      setAiConnectionMessage('已切换为本地模式。')
       return
     }
-    const config: AIConfig = {
-      apiKey: apiKeyInput.trim(),
-      model: modelInput.trim() || DEFAULT_AI_CONFIG.model,
-      baseUrl: DEFAULT_AI_CONFIG.baseUrl,
-    }
+
     setAiConfig(config)
     setGameMode('ai')
+    setAiConnectionStatus('idle')
+    setAiConnectionMessage(`已保存 AI 设置：${config.model}`)
   }
 
   /* ---- Computed display ---- */
@@ -451,7 +493,7 @@ function App() {
                 className="config-input"
                 placeholder="sk-or-..."
                 value={apiKeyInput}
-                onChange={(e) => setApiKeyInput(e.target.value)}
+                onChange={(e) => handleApiKeyInputChange(e.target.value)}
               />
             </label>
             <label className="config-label">
@@ -461,21 +503,40 @@ function App() {
                 className="config-input"
                 placeholder={DEFAULT_AI_CONFIG.model}
                 value={modelInput}
-                onChange={(e) => setModelInput(e.target.value)}
+                onChange={(e) => handleModelInputChange(e.target.value)}
               />
             </label>
             <div className="landing-actions">
               <button
                 type="button"
+                className="ctrl-btn"
+                onClick={handleTestAIConnection}
+                disabled={aiConnectionStatus === 'testing'}
+              >
+                {aiConnectionStatus === 'testing' ? '检测中...' : '检测连通性'}
+              </button>
+              <button
+                type="button"
                 className="ctrl-btn primary"
                 onClick={() => {
-                  handleSaveAIConfig()
-                  startNewGame()
+                  const config = buildAIConfigFromInputs()
+                  if (config) {
+                    setAiConfig(config)
+                    setGameMode('ai')
+                    startNewGame({ mode: 'ai', config })
+                  } else {
+                    setAiConfig(null)
+                    setGameMode('local')
+                    startNewGame({ mode: 'local', config: null })
+                  }
                 }}
               >
                 {apiKeyInput.trim() ? '开始AI对局' : '本地模式开始'}
               </button>
             </div>
+            {aiConnectionMessage && (
+              <p className={`conn-status ${aiConnectionStatus}`}>{aiConnectionMessage}</p>
+            )}
             <p className="landing-hint">
               {apiKeyInput.trim()
                 ? '将使用OpenRouter AI驱动四家出牌'
@@ -595,7 +656,7 @@ function App() {
           <button type="button" className="ctrl-btn primary" onClick={handleNext} disabled={isGameOver || !!activeChallenge || aiThinking}>
             {aiThinking ? '思考中...' : '下一步 ▶'}
           </button>
-          <button type="button" className="ctrl-btn accent" onClick={startNewGame} disabled={aiThinking}>
+          <button type="button" className="ctrl-btn accent" onClick={() => startNewGame()} disabled={aiThinking}>
             新牌局
           </button>
         </div>
@@ -653,15 +714,28 @@ function App() {
               <h4>AI配置</h4>
               <label className="config-label">
                 <span>OpenRouter API Key</span>
-                <input type="password" className="config-input" placeholder="sk-or-..." value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} />
+                <input type="password" className="config-input" placeholder="sk-or-..." value={apiKeyInput} onChange={(e) => handleApiKeyInputChange(e.target.value)} />
               </label>
               <label className="config-label">
                 <span>AI模型</span>
-                <input type="text" className="config-input" placeholder={DEFAULT_AI_CONFIG.model} value={modelInput} onChange={(e) => setModelInput(e.target.value)} />
+                <input type="text" className="config-input" placeholder={DEFAULT_AI_CONFIG.model} value={modelInput} onChange={(e) => handleModelInputChange(e.target.value)} />
               </label>
-              <button type="button" className="ctrl-btn small" onClick={handleSaveAIConfig}>
-                保存AI设置
-              </button>
+              <div className="settings-ai-actions">
+                <button
+                  type="button"
+                  className="ctrl-btn small"
+                  onClick={handleTestAIConnection}
+                  disabled={aiConnectionStatus === 'testing'}
+                >
+                  {aiConnectionStatus === 'testing' ? '检测中...' : '检测连通性'}
+                </button>
+                <button type="button" className="ctrl-btn small" onClick={handleSaveAIConfig}>
+                  保存AI设置
+                </button>
+              </div>
+              {aiConnectionMessage && (
+                <p className={`conn-status ${aiConnectionStatus}`}>{aiConnectionMessage}</p>
+              )}
               <p className="settings-hint">
                 {aiConfig?.apiKey ? `当前模式: AI (${aiConfig.model})` : '当前模式: 本地离线'}
               </p>
@@ -795,7 +869,7 @@ function App() {
                 {gameMode === 'ai' ? ' · AI驱动' : ' · 本地模式'}
               </p>
             </div>
-            <button type="button" className="ctrl-btn accent full" onClick={startNewGame}>开始新牌局</button>
+            <button type="button" className="ctrl-btn accent full" onClick={() => startNewGame()}>开始新牌局</button>
           </div>
         </div>
       )}

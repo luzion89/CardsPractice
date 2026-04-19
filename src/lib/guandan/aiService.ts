@@ -29,6 +29,11 @@ export interface AIPlayResult {
   reason: string
 }
 
+export interface AIConnectivityResult {
+  ok: boolean
+  message: string
+}
+
 /** Partner mapping */
 const PARTNER_SEAT: Record<Seat, Seat> = {
   south: 'north',
@@ -180,6 +185,53 @@ async function callOpenRouter(
 
   const data = await response.json()
   return data.choices?.[0]?.message?.content ?? ''
+}
+
+export async function testOpenRouterConnection(
+  config: AIConfig,
+  signal?: AbortSignal,
+): Promise<AIConnectivityResult> {
+  const response = await fetch(`${config.baseUrl}/models`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'Guandan Memory Lab',
+    },
+    signal,
+  })
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '')
+    if (response.status === 401) {
+      return { ok: false, message: '连接失败：API Key 无效或已过期。' }
+    }
+    if (response.status === 429) {
+      return { ok: false, message: '连接失败：请求频率受限，请稍后重试。' }
+    }
+    return {
+      ok: false,
+      message: `连接失败 (${response.status})：${errBody.slice(0, 120)}`,
+    }
+  }
+
+  const data = (await response.json().catch(() => ({}))) as {
+    data?: Array<{ id?: string }>
+  }
+  const modelIds = Array.isArray(data.data) ? data.data.map((m) => m?.id ?? '') : []
+  const modelFound = modelIds.includes(config.model)
+
+  if (modelFound) {
+    return { ok: true, message: `连接成功：模型 ${config.model} 可用。` }
+  }
+
+  const fallback = modelIds.slice(0, 3).filter(Boolean).join(' / ')
+  return {
+    ok: true,
+    message: fallback
+      ? `连接成功：未检出模型 ${config.model}，可用示例：${fallback}`
+      : `连接成功：未检出模型 ${config.model}，请确认模型名。`,
+  }
 }
 
 /**

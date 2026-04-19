@@ -422,6 +422,60 @@ export function arrangeHandCards(hand: Card[], levelRank: number) {
   return arrangeHandGroups(hand, levelRank).flatMap((group) => group.cards)
 }
 
+function displayCategory(card: Card, levelRank: number) {
+  if (card.rank >= 16) {
+    return 3
+  }
+  if (card.rank === levelRank) {
+    return 2
+  }
+  return 1
+}
+
+function displaySuitPriority(card: Card) {
+  switch (card.suit) {
+    case 'red':
+      return 6
+    case 'black':
+      return 5
+    case 'hearts':
+      return 4
+    case 'spades':
+      return 3
+    case 'diamonds':
+      return 2
+    case 'clubs':
+      return 1
+    default:
+      return 0
+  }
+}
+
+/**
+ * Display-only sorting for visible hand cards.
+ * Left-to-right order: jokers -> level cards -> remaining cards (all descending).
+ */
+export function sortHandForDisplay(hand: Card[], levelRank: number) {
+  return [...hand].sort((left, right) => {
+    const categoryGap = displayCategory(right, levelRank) - displayCategory(left, levelRank)
+    if (categoryGap !== 0) {
+      return categoryGap
+    }
+
+    const rankGap = right.rank - left.rank
+    if (rankGap !== 0) {
+      return rankGap
+    }
+
+    const suitGap = displaySuitPriority(right) - displaySuitPriority(left)
+    if (suitGap !== 0) {
+      return suitGap
+    }
+
+    return right.deck - left.deck
+  })
+}
+
 function buildDeck() {
   const cards: Card[] = []
 

@@ -122,6 +122,27 @@ function nextLeaderAfterTrick(winner: Seat, hands: Record<Seat, Card[]>): Seat |
   return nextActiveSeat(winner, hands)
 }
 
+function rankSuitMultiset(cards: Card[]) {
+  const counts = new Map<string, number>()
+  for (const card of cards) {
+    const key = `${card.rank}:${card.suit}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
+}
+
+function sameRankSuitMultiset(left: Card[], right: Card[]) {
+  if (left.length !== right.length) return false
+  const leftCounts = rankSuitMultiset(left)
+  const rightCounts = rankSuitMultiset(right)
+  if (leftCounts.size !== rightCounts.size) return false
+
+  for (const [key, count] of leftCounts) {
+    if ((rightCounts.get(key) ?? 0) !== count) return false
+  }
+  return true
+}
+
 /**
  * Find a legal PatternPlay from specific card objects.
  * Enumerates patterns over the subset of cards and returns one that
@@ -148,15 +169,10 @@ function findPatternForCards(
     }
   }
 
-  // If exact ID match fails, try matching by rank+suit (different deck copy)
-  const cardSpecs = cards.map((c) => `${c.rank}:${c.suit}`)
+  // If exact ID match fails, try matching by rank+suit multiset (different deck copy)
   for (const pat of allPatterns) {
     if (pat.cards.length !== cards.length) continue
-    const patSpecs = pat.cards.map((c) => `${c.rank}:${c.suit}`)
-    if (
-      cardSpecs.length === patSpecs.length &&
-      cardSpecs.every((s) => patSpecs.includes(s))
-    ) {
+    if (sameRankSuitMultiset(cards, pat.cards)) {
       if (!currentPlay || canBeat(pat, currentPlay)) return pat
     }
   }
