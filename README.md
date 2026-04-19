@@ -66,6 +66,27 @@ npm run lint
 2. 在仓库设置中启用 GitHub Pages，并选择 `GitHub Actions` 作为来源。
 3. 后续每次 `git push origin main`，Actions 都会自动部署。
 
+## 使用 Git Credential Manager 同步 GitHub
+
+如果你使用 HTTPS 远端地址，建议用 Git Credential Manager（GCM）管理登录态，避免每次推送重复输密码。
+
+首次配置（本机一次即可）：
+
+1. `git config --global credential.helper manager-core`
+2. `git credential-manager configure`
+
+确认当前 helper：
+
+- `git config --global credential.helper`
+
+同步到 GitHub：
+
+1. `git add -A`
+2. `git commit -m "你的提交说明"`
+3. `git push origin main`
+
+说明：首次 push 时，GCM 会引导完成 GitHub 登录（浏览器或设备码流程），之后会复用本地凭据。
+
 说明：本地代码“自动同步到 GitHub”这件事本身不能只靠仓库文件完成，因为它依赖你本机的 Git 凭据与远端仓库地址。当前项目已经把“推送后自动部署”配置好；一旦远端仓库绑定完成，部署链路就会自动运行。
 
 ## 规则说明
