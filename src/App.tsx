@@ -9,7 +9,7 @@ import {
   sortHandForDisplay,
   TEAM_LABELS,
 } from './lib/guandan/engine'
-import { GameManager } from './lib/guandan/gameManager'
+import { GameManager, type GamePhase } from './lib/guandan/gameManager'
 import { DEFAULT_AI_CONFIG, testOpenRouterConnection } from './lib/guandan/aiService'
 import type {
   AIConfig,
@@ -230,6 +230,7 @@ function App() {
   const [aiThinking, setAiThinking] = useState(false)
   const [lastAIReason, setLastAIReason] = useState('')
   const [thinkingSeat, setThinkingSeat] = useState<Seat | null>(null)
+  const [aiPhase, setAiPhase] = useState<GamePhase>('waiting')
 
   /* ---- AI config ---- */
   const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => persisted?.aiConfig ?? null)
@@ -250,9 +251,15 @@ function App() {
     () => (game ? buildReplaySnapshot(game, stepIndex) : null),
     [game, stepIndex],
   )
-  const progress = !game ? 0 : game.actions.length > 0 ? Math.round((stepIndex / game.actions.length) * 100) : 0
+  const progress =
+    !game || gameMode === 'ai'
+      ? null
+      : game.actions.length > 0
+        ? Math.round((stepIndex / game.actions.length) * 100)
+        : 0
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
-  const isGameOver = !game || (snapshot?.isComplete ?? false)
+  const isGameOver =
+    !game || (gameMode === 'ai' ? aiPhase === 'finished' : (snapshot?.isComplete ?? false))
   const pressureSeat = snapshot?.currentTrick?.winningSeat ?? snapshot?.currentTrick?.leader ?? snapshot?.nextSeat ?? null
   const ownHand = useMemo(
     () => (game && snapshot ? remainingHandForSeat(game, snapshot, SELF_SEAT) : []),
@@ -340,11 +347,13 @@ function App() {
     setLastAIReason('')
     setAiThinking(false)
     setThinkingSeat(null)
+    setAiPhase(resolvedMode === 'ai' ? 'playing' : 'waiting')
 
     if (resolvedMode === 'ai' && resolvedConfig?.apiKey) {
       const mgr = new GameManager(resolvedConfig)
       managerRef.current = mgr
       const state = mgr.getState()
+      setAiPhase(state.phase)
       setGame(state.game)
       setStepIndex(0)
       setModal('none')
@@ -406,11 +415,13 @@ function App() {
 
       // AI mode: generate next move
       setAiThinking(true)
+      setAiPhase('thinking')
       setThinkingSeat(existingState.currentSeat)
       setError(null)
       try {
         await mgr.playNextMove()
         const state = mgr.getState()
+        setAiPhase(state.phase)
         setLastAIReason(state.lastAIReason)
 
         const newGame = state.game
@@ -442,6 +453,7 @@ function App() {
           }
         })
       } catch (err) {
+        setAiPhase(mgr.getState().phase)
         setError(err instanceof Error ? err.message : String(err))
       } finally {
         setAiThinking(false)
@@ -502,6 +514,7 @@ function App() {
     if (!config) {
       setAiConfig(null)
       setGameMode('local')
+      setAiPhase('waiting')
       setAiConnectionStatus('idle')
       setAiConnectionMessage('已切换为本地模式。')
       return
@@ -509,6 +522,7 @@ function App() {
 
     setAiConfig(config)
     setGameMode('ai')
+    setAiPhase('playing')
     setAiConnectionStatus('idle')
     setAiConnectionMessage(`已保存 AI 设置：${config.model}`)
   }
@@ -643,7 +657,7 @@ function App() {
               <span className="tag level-tag">级牌 {rankToText(game.levelRank)}</span>
               <span className="tag diff-tag">{DIFFICULTY_META[difficulty].label}</span>
               {gameMode === 'ai' && <span className="tag ai-tag">AI</span>}
-              {progress > 0 && <span className="tag">{progress}%</span>}
+              {typeof progress === 'number' && progress > 0 && <span className="tag">{progress}%</span>}
             </div>
           </div>
         </div>

@@ -68,10 +68,19 @@ AI 模式的交互细节也做了两项修正：
 
 ```bash
 npm install
+npm run test
 npm run dev
 npm run build
 npm run lint
+npm run check:update
 ```
+
+其中：
+
+- `npm run test`：运行逻辑单元测试
+- `npm run check:update`：执行项目 post-update 自动检查（test + build + lint）
+
+完整测试策略与每次改动后必须执行的 checklist 见 [docs/post-update-checklist.md](docs/post-update-checklist.md)。
 
 ## GitHub Actions 部署
 

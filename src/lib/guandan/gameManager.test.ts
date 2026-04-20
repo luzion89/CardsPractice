@@ -1,0 +1,60 @@
+import { describe, expect, it, vi } from 'vitest'
+import { GameManager } from './gameManager'
+import type { AIPlayResult } from './aiService'
+
+function buildConfig() {
+  return {
+    apiKey: 'test-key',
+    model: 'google/gemini-2.0-flash-001',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  }
+}
+
+describe('GameManager', () => {
+  it('falls back to a legal lead when AI incorrectly passes on lead', async () => {
+    const manager = new GameManager(buildConfig(), 7)
+    const state = manager.getState()
+    const currentSeat = state.currentSeat
+    expect(currentSeat).not.toBeNull()
+
+    const sessions = (manager as unknown as {
+      aiSessions: Record<string, { requestPlay: () => Promise<AIPlayResult> }>
+    }).aiSessions
+
+    sessions[currentSeat!].requestPlay = vi.fn().mockResolvedValue({
+      cards: [],
+      pass: true,
+      reason: 'test-pass-on-lead',
+    })
+
+    const action = await manager.playNextMove()
+
+    expect(action.play).not.toBeNull()
+    expect(action.action).toBe('play')
+    expect(action.handCountAfter).toBe(26)
+    expect(manager.getState().game.actions).toHaveLength(1)
+  })
+
+  it('falls back to a legal lead when AI returns invalid card codes', async () => {
+    const manager = new GameManager(buildConfig(), 13)
+    const state = manager.getState()
+    const currentSeat = state.currentSeat
+    expect(currentSeat).not.toBeNull()
+
+    const sessions = (manager as unknown as {
+      aiSessions: Record<string, { requestPlay: () => Promise<AIPlayResult> }>
+    }).aiSessions
+
+    sessions[currentSeat!].requestPlay = vi.fn().mockResolvedValue({
+      cards: ['99z'],
+      pass: false,
+      reason: 'invalid-cards',
+    })
+
+    const action = await manager.playNextMove()
+
+    expect(action.play).not.toBeNull()
+    expect(action.action).toBe('play')
+    expect(manager.getState().phase).toBe('playing')
+  })
+})

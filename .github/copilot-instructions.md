@@ -24,6 +24,14 @@
 - [x] Ensure Documentation is Complete
   README.md 与本文件已更新，HTML 注释已清理。
 
+- [x] Establish Update Validation Workflow
+  已建立 `docs/post-update-checklist.md` 作为每次改动后的人工检查清单，并新增 `npm run check:update` 用于执行 `test + build + lint`。
+
+- 后续新增需求、交互改动、AI 逻辑修订时，必须同步更新 `docs/post-update-checklist.md`。
+- 每次实际代码改动后，必须先执行 `npm run check:update`，再按 `docs/post-update-checklist.md` 完成人工检查。
+- 若检查中发现问题，必须修复后重新执行完整检查流程。
+
 - 当前构建命令：`npm run build`
+- 当前更新校验命令：`npm run check:update`
 - 当前部署方式：push 到 `main` 后由 GitHub Actions 自动部署到 GitHub Pages
 - 当前项目根目录：`.`
