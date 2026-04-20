@@ -79,6 +79,6 @@ describe('GameManager', () => {
     expect(action.play).not.toBeNull()
     expect(action.action).toBe('play')
     expect(manager.getState().phase).toBe('playing')
-    expect(manager.getState().lastAIReason).toBe('AI连续返回不可解析内容，已改用本地最小合法牌')
+    expect(manager.getState().lastAIReason).toBe('AI连续返回不可解析内容：未找到有效 JSON 对象，已改用本地最小合法牌')
   })
 })

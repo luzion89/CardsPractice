@@ -175,6 +175,36 @@ describe('AIPlayerSession', () => {
     expect(result.reason).toBe('外层仍是字符串JSON')
   })
 
+  it('parses function_call arguments when content is empty', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: '',
+          function_call: {
+            name: 'play_cards',
+            arguments: '{"cards":["3a"],"reason":"通过 function_call 返回"}',
+          },
+        },
+      }],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const card3 = makeCard('3a-1', 3, 'spades')
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [card3],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+    )
+
+    expect(result.pass).toBe(false)
+    expect(result.cards).toEqual(['3a'])
+    expect(result.reason).toBe('通过 function_call 返回')
+  })
+
   it('parses starter opening guide responses', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '\n\n{"headline":"牌面引导","items":[{"label":"大王","outsideCount":2},{"label":"级牌 9","outsideCount":5}]}' } }],

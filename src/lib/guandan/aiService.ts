@@ -56,12 +56,14 @@ export type AIRequestErrorKind = 'auth' | 'rate-limit' | 'request' | 'response-f
 export class AIRequestError extends Error {
   kind: AIRequestErrorKind
   retryable: boolean
+  details?: string
 
-  constructor(message: string, retryable: boolean, kind: AIRequestErrorKind = 'request') {
+  constructor(message: string, retryable: boolean, kind: AIRequestErrorKind = 'request', details?: string) {
     super(message)
     this.name = 'AIRequestError'
     this.kind = kind
     this.retryable = retryable
+    this.details = details
   }
 }
 
@@ -163,9 +165,24 @@ function normalizeResponseContent(content: unknown): string {
   }
 
   if (content && typeof content === 'object') {
-    const maybeText = content as { text?: unknown; content?: unknown }
+    const maybeText = content as {
+      text?: unknown
+      content?: unknown
+      value?: unknown
+      arguments?: unknown
+      parsed?: unknown
+    }
     if (typeof maybeText.text === 'string') {
       return maybeText.text
+    }
+    if (maybeText.parsed !== undefined) {
+      return JSON.stringify(maybeText.parsed)
+    }
+    if (maybeText.arguments !== undefined) {
+      return normalizeResponseContent(maybeText.arguments)
+    }
+    if (maybeText.value !== undefined) {
+      return normalizeResponseContent(maybeText.value)
     }
     if (maybeText.content !== undefined) {
       return normalizeResponseContent(maybeText.content)
@@ -301,7 +318,7 @@ function walkParsedJson<T>(
     return null
   }
 
-  const preferredKeys = ['result', 'response', 'output', 'answer', 'data', 'json', 'content', 'message', 'arguments']
+  const preferredKeys = ['result', 'response', 'output', 'answer', 'data', 'json', 'content', 'message', 'arguments', 'function_call', 'tool_calls', 'parsed', 'value', 'args']
   for (const key of preferredKeys) {
     if (!(key in value)) {
       continue
@@ -377,6 +394,167 @@ function splitCardCodes(value: string) {
     .split(/[\s,，、]+/)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+type OpenRouterResponseFormat =
+  | { type: 'json_object' }
+  | {
+      type: 'json_schema'
+      jsonSchema: {
+        name: string
+        strict?: boolean
+        schema: Record<string, unknown>
+      }
+    }
+
+type OpenRouterRequestOptions = {
+  responseFormat?: OpenRouterResponseFormat
+  enableResponseHealing?: boolean
+  maxTokens?: number
+}
+
+type OpenRouterCallResult = {
+  text: string
+  finishReason: string | null
+}
+
+type OpenRouterChoice = {
+  finish_reason?: unknown
+  text?: unknown
+  output_text?: unknown
+  message?: {
+    content?: unknown
+    parsed?: unknown
+    output_text?: unknown
+    function_call?: {
+      arguments?: unknown
+    }
+    tool_calls?: Array<{
+      function?: {
+        arguments?: unknown
+      }
+    }>
+  }
+}
+
+type OpenRouterChatResponse = {
+  choices?: OpenRouterChoice[]
+}
+
+function buildPlayResponseFormat(): OpenRouterResponseFormat {
+  return {
+    type: 'json_schema',
+    jsonSchema: {
+      name: 'guandan_play',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          cards: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '当前回合选择打出的牌面编码；过牌时返回空数组。',
+          },
+          pass: {
+            type: 'boolean',
+            description: '只有在明确选择过牌时才为 true。',
+          },
+          reason: {
+            type: 'string',
+            description: '一句简短中文理由。',
+          },
+        },
+        required: ['cards', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  }
+}
+
+function buildOpeningGuideResponseFormat(): OpenRouterResponseFormat {
+  return {
+    type: 'json_schema',
+    jsonSchema: {
+      name: 'opening_guide',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          headline: { type: 'string' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                outsideCount: { type: 'number' },
+              },
+              required: ['label', 'outsideCount'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['headline', 'items'],
+        additionalProperties: false,
+      },
+    },
+  }
+}
+
+function compactText(text: string, limit = 180) {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) {
+    return ''
+  }
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
+}
+
+function shouldRetryWithoutResponseFormat(error: unknown) {
+  if (!(error instanceof AIRequestError) || error.kind !== 'request') {
+    return false
+  }
+
+  const source = `${error.message}\n${error.details ?? ''}`.toLowerCase()
+  return (
+    source.includes('response_format')
+    || source.includes('json_schema')
+    || source.includes('json_object')
+    || source.includes('structured output')
+    || source.includes('structured_output')
+    || source.includes('response-healing')
+  )
+}
+
+function serializeFallbackPayload(value: unknown) {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return ''
+  }
+}
+
+function extractResponseText(data: OpenRouterChatResponse): OpenRouterCallResult {
+  const choice = data?.choices?.[0]
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null
+  const primaryText = normalizeResponseContent(
+    choice?.message?.content
+      ?? choice?.text
+      ?? choice?.message?.tool_calls?.[0]?.function?.arguments
+      ?? choice?.message?.function_call?.arguments
+      ?? choice?.message?.parsed
+      ?? choice?.message?.output_text
+      ?? choice?.output_text
+      ?? '',
+  )
+
+  if (primaryText.trim()) {
+    return { text: primaryText, finishReason }
+  }
+
+  return {
+    text: serializeFallbackPayload(choice?.message ?? choice ?? data),
+    finishReason,
+  }
 }
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
@@ -619,9 +797,35 @@ function parseAIResponse(text: string): ParsedAIResponse {
 async function callOpenRouter(
   config: AIConfig,
   messages: AIMessage[],
+  options: OpenRouterRequestOptions = {},
   signal?: AbortSignal,
-): Promise<string> {
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+): Promise<OpenRouterCallResult> {
+  const executeRequest = async (requestOptions: OpenRouterRequestOptions): Promise<OpenRouterCallResult> => {
+    const body: Record<string, unknown> = {
+      model: config.model,
+      messages,
+      temperature: 0.3,
+      max_tokens: requestOptions.maxTokens ?? 512,
+    }
+
+    if (requestOptions.responseFormat) {
+      body.response_format = requestOptions.responseFormat.type === 'json_schema'
+        ? {
+            type: 'json_schema',
+            json_schema: {
+              name: requestOptions.responseFormat.jsonSchema.name,
+              strict: requestOptions.responseFormat.jsonSchema.strict ?? true,
+              schema: requestOptions.responseFormat.jsonSchema.schema,
+            },
+          }
+        : { type: 'json_object' }
+    }
+
+    if (requestOptions.enableResponseHealing && requestOptions.responseFormat) {
+      body.plugins = [{ id: 'response-healing' }]
+    }
+
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -629,30 +833,33 @@ async function callOpenRouter(
       'HTTP-Referer': window.location.origin,
       'X-Title': 'Guandan Memory Lab',
     },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature: 0.6,
-      max_tokens: 256,
-    }),
+      body: JSON.stringify(body),
     signal,
-  })
+    })
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '')
-    if (response.status === 401) throw new AIRequestError('API密钥无效，请检查设置。', false, 'auth')
-    if (response.status === 429) throw new AIRequestError('请求过于频繁，请稍后再试。', false, 'rate-limit')
-    throw new AIRequestError(`AI请求失败 (${response.status}): ${errBody.slice(0, 120)}`, true, 'request')
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '')
+      if (response.status === 401) throw new AIRequestError('API密钥无效，请检查设置。', false, 'auth', errBody)
+      if (response.status === 429) throw new AIRequestError('请求过于频繁，请稍后再试。', false, 'rate-limit', errBody)
+      throw new AIRequestError(`AI请求失败 (${response.status}): ${compactText(errBody, 120)}`, true, 'request', errBody)
+    }
+
+    const data = await response.json()
+    return extractResponseText(data)
   }
 
-  const data = await response.json()
-  const choice = data.choices?.[0]
-  return normalizeResponseContent(
-    choice?.message?.content
-      ?? choice?.text
-      ?? choice?.message?.tool_calls?.[0]?.function?.arguments
-      ?? '',
-  )
+  try {
+    return await executeRequest(options)
+  } catch (error) {
+    if (options.responseFormat && shouldRetryWithoutResponseFormat(error)) {
+      return executeRequest({
+        ...options,
+        responseFormat: undefined,
+        enableResponseHealing: false,
+      })
+    }
+    throw error
+  }
 }
 
 export async function testOpenRouterConnection(
@@ -720,8 +927,12 @@ export async function requestOpeningGuide(
     },
   ]
 
-  const responseText = await callOpenRouter(config, messages, signal)
-  const parsed = parseOpeningGuideResponse(responseText)
+  const response = await callOpenRouter(config, messages, {
+    responseFormat: buildOpeningGuideResponseFormat(),
+    enableResponseHealing: true,
+    maxTokens: 320,
+  }, signal)
+  const parsed = parseOpeningGuideResponse(response.text)
   if (!parsed) {
     throw new Error('AI 开局引导回复格式无效')
   }
@@ -776,7 +987,12 @@ export class AIPlayerSession {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const isLastAttempt = attempt === MAX_RETRIES
       try {
-        const responseText = await callOpenRouter(this.config, messages, signal)
+        const response = await callOpenRouter(this.config, messages, {
+          responseFormat: buildPlayResponseFormat(),
+          enableResponseHealing: true,
+          maxTokens: 512,
+        }, signal)
+        const responseText = response.text
         const parsed = parseAIResponse(responseText)
 
         if (parsed.ok) {
@@ -784,10 +1000,20 @@ export class AIPlayerSession {
         }
 
         if (isLastAttempt) {
-          throw new AIRequestError(`已自动重试3次，AI仍未返回有效出牌信息：${parsed.message}`, false, 'response-format')
+          const responseSnippet = compactText(responseText, 220)
+          const finishReasonNote = response.finishReason === 'length'
+            ? '；finish_reason=length，响应可能在完整 JSON 前被截断'
+            : ''
+          const snippetNote = responseSnippet ? `；最近一次返回片段：${responseSnippet}` : ''
+          throw new AIRequestError(
+            `已自动重试3次，AI仍未返回有效出牌信息：${parsed.message}${finishReasonNote}${snippetNote}`,
+            false,
+            'response-format',
+            responseText,
+          )
         }
 
-        messages.push({ role: 'assistant', content: responseText })
+        messages.push({ role: 'assistant', content: responseText.slice(0, 1200) })
         messages.push({
           role: 'user',
           content: `你上一条回复无效，原因：${parsed.message}。请重新决策，并且只回复严格 JSON，不要添加其他文字。`,

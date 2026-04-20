@@ -180,6 +180,20 @@ function findPatternForCards(
   return null
 }
 
+function summarizeResponseFormatError(message: string) {
+  const normalized = message
+    .replace(/^已自动重试3次，AI仍未返回有效出牌信息[:：]?\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return 'AI连续返回不可解析内容'
+  }
+
+  const summary = normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized
+  return `AI连续返回不可解析内容：${summary}`
+}
+
 /* ------------------------------------------------------------------ */
 /*  GameManager                                                        */
 /* ------------------------------------------------------------------ */
@@ -330,7 +344,7 @@ export class GameManager {
     } catch (err) {
       this.phase = 'playing'
       if (err instanceof AIRequestError && err.kind === 'response-format') {
-        return this.applyFallbackDecision(seat, hand, currentPlay, 'AI连续返回不可解析内容')
+        return this.applyFallbackDecision(seat, hand, currentPlay, summarizeResponseFormatError(err.message))
       }
       throw err
     }
