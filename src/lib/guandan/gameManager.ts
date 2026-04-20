@@ -19,11 +19,14 @@ import type {
 import {
   arrangeHandCards,
   canBeat,
+  chooseLeadPlay,
+  chooseResponsePlay,
   createSeededRng,
   enumerateLeadPatterns,
   nextSeatOf,
   partnerOf,
   SEATS,
+  shouldKeepCandidate,
 } from './engine'
 import { cardToCode, resolveCardsFromCodes } from './cardCode'
 import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult, type AILegalActionOption } from './aiService'
@@ -143,6 +146,15 @@ function sameRankSuitMultiset(left: Card[], right: Card[]) {
   return true
 }
 
+function samePatternCards(left: PatternPlay, right: PatternPlay) {
+  if (left.cards.length !== right.cards.length) {
+    return false
+  }
+
+  const ids = new Set(left.cards.map((card) => card.id))
+  return right.cards.every((card) => ids.has(card.id))
+}
+
 /**
  * Find a legal PatternPlay from specific card objects.
  * Enumerates patterns over the subset of cards and returns one that
@@ -206,6 +218,8 @@ const LEAD_OPTION_TYPE_PRIORITY: Record<PatternPlay['type'], number> = {
   straightFlush: 8,
   jokerBomb: 9,
 }
+
+const MAX_AI_ACTION_OPTIONS = 16
 
 function comparePatternsForAiOptions(left: PatternPlay, right: PatternPlay, currentPlay: PatternPlay | null) {
   if (currentPlay) {
@@ -339,13 +353,52 @@ export class GameManager {
     return this.phase === 'finished'
   }
 
-  private buildAiLegalActions(hand: Card[], currentPlay: PatternPlay | null) {
-    const candidatePatterns = enumerateLeadPatterns(hand, this.levelRank)
+  private buildAiLegalActions(
+    seat: Seat,
+    hand: Card[],
+    currentPlay: PatternPlay | null,
+    remainingCounts: Record<Seat, number>,
+  ) {
+    const currentWinningSeat = this.trickState?.lastWinningSeat ?? null
+    const urgent = currentPlay && currentWinningSeat
+      ? remainingCounts[currentWinningSeat] <= 5 || remainingCounts[partnerOf(seat)] <= 3 || hand.length <= 6
+      : false
+
+    const allPatterns = enumerateLeadPatterns(hand, this.levelRank)
       .filter((pattern) => !currentPlay || canBeat(pattern, currentPlay))
-      .toSorted((left, right) => comparePatternsForAiOptions(left, right, currentPlay))
+
+    let candidatePatterns = allPatterns.filter((pattern) => shouldKeepCandidate(pattern, hand, this.levelRank, urgent))
+
+    const preferredPattern = !currentPlay
+      ? chooseLeadPlay(hand, this.levelRank, seat, remainingCounts) ?? null
+      : currentWinningSeat
+        ? chooseResponsePlay(hand, this.levelRank, currentPlay, seat, currentWinningSeat, remainingCounts)
+        : null
+
+    if (currentPlay && currentWinningSeat && partnerOf(seat) === currentWinningSeat && !preferredPattern) {
+      candidatePatterns = []
+    } else if (candidatePatterns.length === 0 && !currentPlay) {
+      candidatePatterns = allPatterns
+    }
+
+    let rankedPatterns = candidatePatterns.toSorted((left, right) => comparePatternsForAiOptions(left, right, currentPlay))
+
+    if (preferredPattern) {
+      const preferredIndex = rankedPatterns.findIndex((pattern) => samePatternCards(pattern, preferredPattern))
+      if (preferredIndex >= 0) {
+        const [preferred] = rankedPatterns.splice(preferredIndex, 1)
+        rankedPatterns.unshift(preferred)
+      } else {
+        rankedPatterns.unshift(preferredPattern)
+      }
+    }
+
+    if (rankedPatterns.length > MAX_AI_ACTION_OPTIONS) {
+      rankedPatterns = rankedPatterns.slice(0, MAX_AI_ACTION_OPTIONS)
+    }
 
     const resolved = new Map<string, ResolvedAILegalAction>()
-    const legalActions: AILegalActionOption[] = candidatePatterns.map((pattern, index) => {
+    const legalActions: AILegalActionOption[] = rankedPatterns.map((pattern, index) => {
       const actionId = `A${String(index + 1).padStart(2, '0')}`
       const option: AILegalActionOption = {
         actionId,
@@ -399,7 +452,7 @@ export class GameManager {
     const isLeading = !this.trickState
     const currentPlay = this.trickState?.lastWinningPlay ?? null
     const remaining = buildRemainingCounts(this.hands)
-    const { legalActions, resolved } = this.buildAiLegalActions(hand, currentPlay)
+    const { legalActions, resolved } = this.buildAiLegalActions(seat, hand, currentPlay, remaining)
 
     // Call AI
     this.phase = 'thinking'

@@ -274,6 +274,7 @@ function App() {
   /* ---- Refs ---- */
   const managerRef = useRef<GameManager | null>(null)
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const nextStepLockRef = useRef(false)
 
   /* ---- Derived ---- */
   const snapshot = useMemo(
@@ -437,119 +438,125 @@ function App() {
   }
 
   async function handleNext() {
-    if (activeChallenge || isGameOver || aiThinking) return
+    if (activeChallenge || isGameOver || aiThinking || nextStepLockRef.current) return
 
-    if (managerRef.current && gameMode === 'ai') {
-      const mgr = managerRef.current
+    nextStepLockRef.current = true
 
-      // If user stepped backward, reveal already-generated actions first.
-      const existingState = mgr.getState()
-      if (stepIndex < existingState.game.actions.length) {
-        const nextStep = Math.min(existingState.game.actions.length, stepIndex + 1)
-        const planned = getChallengeForAdvance(
-          existingState.game,
-          stepIndex,
-          nextStep,
-          difficulty,
-          challengedTrickIndexes,
-        )
+    try {
+      if (managerRef.current && gameMode === 'ai') {
+        const mgr = managerRef.current
 
-        startTransition(() => {
-          setGame(existingState.game)
-          setStepIndex(nextStep)
+        // If user stepped backward, reveal already-generated actions first.
+        const existingState = mgr.getState()
+        if (stepIndex < existingState.game.actions.length) {
+          const nextStep = Math.min(existingState.game.actions.length, stepIndex + 1)
+          const planned = getChallengeForAdvance(
+            existingState.game,
+            stepIndex,
+            nextStep,
+            difficulty,
+            challengedTrickIndexes,
+          )
 
-          if (planned) {
-            setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
-            setActiveChallenge({
-              trickIndex: planned.trickIndex,
-              question: planned.question,
-              selectedIndex: null,
-              isCorrect: null,
-            })
-          } else if (existingState.phase === 'finished' && nextStep >= existingState.game.actions.length) {
-            setModal('result')
-          }
-        })
-        return
-      }
+          startTransition(() => {
+            setGame(existingState.game)
+            setStepIndex(nextStep)
 
-      if (existingState.phase === 'finished') {
-        setModal('result')
-        return
-      }
-
-      // AI mode: generate next move
-      setAiThinking(true)
-      setAiPhase('thinking')
-      setThinkingSeat(existingState.currentSeat)
-      setError(null)
-      try {
-        await mgr.playNextMove()
-        const state = mgr.getState()
-        setAiPhase(state.phase)
-
-        const newGame = state.game
-        const newStep = newGame.actions.length
-        const latestAction = newGame.actions[newStep - 1] ?? null
-
-        if (latestAction && state.lastAIReason) {
-          setAiReasons((prev) => ({
-            ...prev,
-            [latestAction.index]: state.lastAIReason,
-          }))
-        }
-
-        // Check for challenge
-        const planned = getChallengeForAdvance(
-          newGame,
-          stepIndex,
-          newStep,
-          difficulty,
-          challengedTrickIndexes,
-        )
-
-        startTransition(() => {
-          setGame(newGame)
-          setStepIndex(newStep)
-
-          if (planned) {
-            setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
-            setActiveChallenge({
-              trickIndex: planned.trickIndex,
-              question: planned.question,
-              selectedIndex: null,
-              isCorrect: null,
-            })
-          } else if (state.phase === 'finished') {
-            setModal('result')
-          }
-        })
-      } catch (err) {
-        setAiPhase(mgr.getState().phase)
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setAiThinking(false)
-        setThinkingSeat(null)
-      }
-    } else if (game) {
-      // Local mode: step through pre-generated game
-      const nextStep = Math.min(game.actions.length, stepIndex + 1)
-      const planned = getChallengeForAdvance(game, stepIndex, nextStep, difficulty, challengedTrickIndexes)
-
-      startTransition(() => {
-        setStepIndex(nextStep)
-        if (planned) {
-          setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
-          setActiveChallenge({
-            trickIndex: planned.trickIndex,
-            question: planned.question,
-            selectedIndex: null,
-            isCorrect: null,
+            if (planned) {
+              setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+              setActiveChallenge({
+                trickIndex: planned.trickIndex,
+                question: planned.question,
+                selectedIndex: null,
+                isCorrect: null,
+              })
+            } else if (existingState.phase === 'finished' && nextStep >= existingState.game.actions.length) {
+              setModal('result')
+            }
           })
-        } else if (nextStep >= game.actions.length) {
-          setModal('result')
+          return
         }
-      })
+
+        if (existingState.phase === 'finished') {
+          setModal('result')
+          return
+        }
+
+        // AI mode: generate next move
+        setAiThinking(true)
+        setAiPhase('thinking')
+        setThinkingSeat(existingState.currentSeat)
+        setError(null)
+        try {
+          await mgr.playNextMove()
+          const state = mgr.getState()
+          setAiPhase(state.phase)
+
+          const newGame = state.game
+          const newStep = newGame.actions.length
+          const latestAction = newGame.actions[newStep - 1] ?? null
+
+          if (latestAction && state.lastAIReason) {
+            setAiReasons((prev) => ({
+              ...prev,
+              [latestAction.index]: state.lastAIReason,
+            }))
+          }
+
+          // Check for challenge
+          const planned = getChallengeForAdvance(
+            newGame,
+            stepIndex,
+            newStep,
+            difficulty,
+            challengedTrickIndexes,
+          )
+
+          startTransition(() => {
+            setGame(newGame)
+            setStepIndex(newStep)
+
+            if (planned) {
+              setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+              setActiveChallenge({
+                trickIndex: planned.trickIndex,
+                question: planned.question,
+                selectedIndex: null,
+                isCorrect: null,
+              })
+            } else if (state.phase === 'finished') {
+              setModal('result')
+            }
+          })
+        } catch (err) {
+          setAiPhase(mgr.getState().phase)
+          setError(err instanceof Error ? err.message : String(err))
+        } finally {
+          setAiThinking(false)
+          setThinkingSeat(null)
+        }
+      } else if (game) {
+        // Local mode: step through pre-generated game
+        const nextStep = Math.min(game.actions.length, stepIndex + 1)
+        const planned = getChallengeForAdvance(game, stepIndex, nextStep, difficulty, challengedTrickIndexes)
+
+        startTransition(() => {
+          setStepIndex(nextStep)
+          if (planned) {
+            setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+            setActiveChallenge({
+              trickIndex: planned.trickIndex,
+              question: planned.question,
+              selectedIndex: null,
+              isCorrect: null,
+            })
+          } else if (nextStep >= game.actions.length) {
+            setModal('result')
+          }
+        })
+      }
+    } finally {
+      nextStepLockRef.current = false
     }
   }
 
@@ -605,6 +612,9 @@ function App() {
     : snapshot && snapshot.completedTricks.length > 0
       ? `已完成 ${snapshot.completedTricks.length} 轮`
       : '等待开局'
+  const roundNumber = snapshot?.currentTrick
+    ? snapshot.currentTrick.index + 1
+    : snapshot?.completedTricks.length ?? 0
 
   const allyRemaining = (snapshot?.remainingCounts.south ?? 27) + (snapshot?.remainingCounts.north ?? 27)
   const rivalRemaining = (snapshot?.remainingCounts.west ?? 27) + (snapshot?.remainingCounts.east ?? 27)
@@ -721,7 +731,7 @@ function App() {
             </div>
             <div className="score-cell round-cell">
               <span className="score-label">轮次</span>
-              <strong className="score-value">{(snapshot?.completedTricks.length ?? 0) + (snapshot?.currentTrick ? 1 : 0)}</strong>
+              <strong className="score-value">{roundNumber}</strong>
             </div>
           </div>
           <div className="game-info">

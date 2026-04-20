@@ -18,7 +18,7 @@ export const DEFAULT_AI_CONFIG: Omit<AIConfig, 'apiKey'> = {
   baseUrl: 'https://openrouter.ai/api/v1',
 }
 
-const STRUCTURED_OUTPUT_FALLBACK_MODEL = 'google/gemini-2.0-flash-001'
+const STRUCTURED_OUTPUT_FALLBACK_MODELS = ['google/gemini-2.0-flash-001', 'openai/gpt-4o-mini'] as const
 
 interface AIMessage {
   role: 'system' | 'user' | 'assistant'
@@ -531,6 +531,26 @@ function compactText(text: string, limit = 180) {
   return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
 }
 
+function extractRetryDelayMs(details?: string, attempt = 0) {
+  try {
+    const parsed = details ? JSON.parse(details) as {
+      error?: {
+        metadata?: {
+          retry_after_seconds?: unknown
+        }
+      }
+    } : null
+    const retryAfterSeconds = Number(parsed?.error?.metadata?.retry_after_seconds)
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return Math.min(Math.round(retryAfterSeconds * 1000), 4000)
+    }
+  } catch {
+    // Ignore invalid error payloads and use exponential backoff below.
+  }
+
+  return Math.min(800 * (attempt + 1), 4000)
+}
+
 function shouldRetryWithoutResponseFormat(error: unknown) {
   if (!(error instanceof AIRequestError) || error.kind !== 'request') {
     return false
@@ -586,6 +606,7 @@ function buildSystemPrompt(seat: Seat, levelRank: number): string {
   return `你是掼蛋(Guandan)策略代理，固定座位是 ${seat}（${AI_SEAT_NAMES[seat]}），固定搭档是 ${PARTNER_SEAT[seat]}（${AI_SEAT_NAMES[PARTNER_SEAT[seat]]}）。南北一队，东西一队。本局级牌是 ${levelText}，红桃${levelText}是逢人配。
 
 你本回合不需要自己拼牌码。局面数据里的 legalActions 已经是当前全部合法动作，你只能从其中选择一个 actionId。
+legalActions 已按本地稳健策略排序，越靠前通常越稳妥；除非有非常明确的战术理由，不要选择明显更靠后的高破坏动作。
 
 决策时遵守这些原则：
 - 只根据 seatId、team、relationToYou 判断敌我，不要依赖 uiLabel。
@@ -1012,7 +1033,7 @@ export class AIPlayerSession {
       remainingCounts,
       legalActions,
     )
-    const modelCandidates = [this.config.model, STRUCTURED_OUTPUT_FALLBACK_MODEL].filter((model, index, list) => list.indexOf(model) === index)
+    const modelCandidates = [this.config.model, ...STRUCTURED_OUTPUT_FALLBACK_MODELS].filter((model, index, list) => list.indexOf(model) === index)
     let modelIndex = 0
 
     const MAX_RETRIES = 3
@@ -1074,9 +1095,22 @@ export class AIPlayerSession {
           throw err
         }
 
-        if (err instanceof AIRequestError && err.kind !== 'auth' && modelIndex + 1 < modelCandidates.length) {
-          modelIndex += 1
-          continue
+        if (err instanceof AIRequestError) {
+          if (err.kind === 'rate-limit') {
+            if (modelIndex + 1 < modelCandidates.length) {
+              modelIndex += 1
+              continue
+            }
+            if (!isLastAttempt) {
+              await new Promise((resolve) => setTimeout(resolve, extractRetryDelayMs(err.details, attempt)))
+              continue
+            }
+          }
+
+          if (err.kind !== 'auth' && modelIndex + 1 < modelCandidates.length) {
+            modelIndex += 1
+            continue
+          }
         }
 
         const retryable = err instanceof AIRequestError ? err.retryable : true

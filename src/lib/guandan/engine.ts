@@ -1155,7 +1155,7 @@ function isComplexPattern(play: PatternPlay) {
   return play.type === 'straight' || play.type === 'tube' || play.type === 'plate' || play.type === 'fullHouse'
 }
 
-function shouldKeepCandidate(play: PatternPlay, hand: Card[], levelRank: number, urgent: boolean) {
+export function shouldKeepCandidate(play: PatternPlay, hand: Card[], levelRank: number, urgent: boolean) {
   if (play.cards.length === hand.length) {
     return true
   }
@@ -1294,7 +1294,7 @@ function scoreResponse(
   return score
 }
 
-function chooseLeadPlay(
+export function chooseLeadPlay(
   hand: Card[],
   levelRank: number,
   actor: Seat,
@@ -1342,7 +1342,7 @@ function chooseLeadPlay(
   )[0]
 }
 
-function chooseResponsePlay(
+export function chooseResponsePlay(
   hand: Card[],
   levelRank: number,
   current: PatternPlay,
@@ -1512,6 +1512,7 @@ export function buildReplaySnapshot(game: GuandanGame, stepIndex: number): Repla
   })
 
   const completedTricks = visibleTricks.filter((trick) => trick.complete)
+  const currentTrick = [...visibleTricks].reverse().find((trick) => !trick.complete) ?? null
   const lastAction = visibleActions.at(-1) ?? null
   const remainingCounts = lastAction?.remainingCounts ?? {
     south: 27,
@@ -1525,7 +1526,7 @@ export function buildReplaySnapshot(game: GuandanGame, stepIndex: number): Repla
     visibleActions,
     visibleTricks,
     completedTricks,
-    currentTrick: visibleTricks.at(-1) ?? null,
+    currentTrick,
     remainingCounts,
     nextSeat:
       clampedStep < game.actions.length

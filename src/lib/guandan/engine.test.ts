@@ -96,5 +96,52 @@ describe('buildReplaySnapshot', () => {
     expect(snapshot.isComplete).toBe(true)
     expect(snapshot.nextSeat).toBeNull()
     expect(snapshot.completedTricks).toHaveLength(1)
+    expect(snapshot.currentTrick).toBeNull()
+  })
+
+  it('clears currentTrick at the boundary after a trick is fully completed', () => {
+    const card = makeCard('s-4', 4, 'spades')
+    const game: GuandanGame = {
+      ...makeEmptyGame('south'),
+      players: {
+        south: [card],
+        east: [],
+        north: [],
+        west: [],
+      },
+      actions: [
+        {
+          index: 0,
+          trickIndex: 0,
+          seat: 'south',
+          action: 'play',
+          play: {
+            type: 'single',
+            cards: [card],
+            label: '单张 4',
+            detail: '单张 4',
+            shortLabel: '单张',
+            primaryValue: 4,
+            sequenceIndex: null,
+            sameRankCount: null,
+            bombTier: 0,
+            wildCount: 0,
+            assignments: {},
+          },
+          handCountAfter: 0,
+          remainingCounts: { south: 0, east: 0, north: 0, west: 0 },
+          winningSeat: 'south',
+          note: '单张 4',
+        },
+      ],
+      tricks: [{ index: 0, leader: 'south', winningSeat: 'south', actionIndexes: [0] }],
+      finishOrder: [{ seat: 'south', place: 1 }],
+    }
+
+    const snapshot = buildReplaySnapshot(game, 1)
+
+    expect(snapshot.visibleTricks).toHaveLength(1)
+    expect(snapshot.visibleTricks[0].complete).toBe(true)
+    expect(snapshot.currentTrick).toBeNull()
   })
 })
