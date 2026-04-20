@@ -34,7 +34,13 @@ export interface AIConnectivityResult {
   message: string
 }
 
+export interface OpeningGuideResult {
+  headline: string
+  bullets: string[]
+}
+
 type SeatRelation = 'self' | 'partner' | 'opponent'
+type SeatTeam = 'ns' | 'ew'
 
 type ParsedAIResponse =
   | { ok: true; result: AIPlayResult }
@@ -58,6 +64,20 @@ const PARTNER_SEAT: Record<Seat, Seat> = {
   west: 'east',
 }
 
+const AI_SEAT_NAMES: Record<Seat, string> = {
+  south: '南家',
+  east: '东家',
+  north: '北家',
+  west: '西家',
+}
+
+const SEAT_TEAMS: Record<Seat, SeatTeam> = {
+  south: 'ns',
+  north: 'ns',
+  east: 'ew',
+  west: 'ew',
+}
+
 function getSeatRelation(viewer: Seat, actor: Seat): SeatRelation {
   if (viewer === actor) return 'self'
   if (PARTNER_SEAT[viewer] === actor) return 'partner'
@@ -66,15 +86,56 @@ function getSeatRelation(viewer: Seat, actor: Seat): SeatRelation {
 
 function describeSeat(viewer: Seat, actor: Seat) {
   return {
-    seat: actor,
-    label: SEAT_LABELS[actor],
-    relation: getSeatRelation(viewer, actor),
+    seatId: actor,
+    absoluteName: AI_SEAT_NAMES[actor],
+    uiLabel: SEAT_LABELS[actor],
+    team: SEAT_TEAMS[actor],
+    relationToYou: getSeatRelation(viewer, actor),
+  }
+}
+
+function countRank(hand: Card[], rank: number) {
+  return hand.filter((card) => card.rank === rank).length
+}
+
+function buildOpeningGuidePayload(hand: Card[], levelRank: number) {
+  const countsByRank = new Map<number, number>()
+  for (const card of hand) {
+    countsByRank.set(card.rank, (countsByRank.get(card.rank) ?? 0) + 1)
+  }
+
+  const missingHighFaces = [10, 11, 12, 13, 14]
+    .filter((rank) => (countsByRank.get(rank) ?? 0) === 0)
+    .map((rank) => rankToText(rank))
+
+  return {
+    levelRank: rankToText(levelRank),
+    handCount: hand.length,
+    handCards: hand.map(cardToCode),
+    focusCounts: {
+      bigJoker: countRank(hand, 17),
+      smallJoker: countRank(hand, 16),
+      levelCards: countRank(hand, levelRank),
+      wildCards: hand.filter((card) => card.rank === levelRank && card.suit === 'hearts').length,
+      aces: countRank(hand, 14),
+      kings: countRank(hand, 13),
+    },
+    highFacePresence: [10, 11, 12, 13, 14].map((rank) => ({
+      face: rankToText(rank),
+      countInHand: countsByRank.get(rank) ?? 0,
+    })),
+    missingHighFaces,
   }
 }
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
   const levelText = rankToText(levelRank)
-  return `你是一个掼蛋(Guandan)高手，坐在${SEAT_LABELS[seat]}位置。你的搭档是${SEAT_LABELS[PARTNER_SEAT[seat]]}。
+  return `你是一个掼蛋(Guandan)高手，你的固定座位是 ${seat}（${AI_SEAT_NAMES[seat]}），固定搭档是 ${PARTNER_SEAT[seat]}（${AI_SEAT_NAMES[PARTNER_SEAT[seat]]}）。南北为一队，东西为一队。
+
+重要说明：
+- user interface 里的“自己/下家/对家/上家”只是从南家视角生成的界面称呼，不是你判断敌我的依据。
+- 你判断敌我时，必须只看结构化数据中的 seatId、team、relationToYou。
+- 如果 relationToYou = partner，默认那就是你的搭档；除非明确有抢权、送牌或拦对手的理由，否则不要去压搭档。
 
 掼蛋规则：
 - 两副标准扑克牌（共108张），四人游戏，南北为一队，东西为一队
@@ -92,10 +153,11 @@ function buildSystemPrompt(seat: Seat, levelRank: number): string {
 - SJ=小王, BJ=大王
 
 策略要点：
-- relation 字段含义：self=你，partner=搭档，opponent=对手；判断敌我时必须优先看 relation，不要把搭档当作对手去压
+- relationToYou 字段含义：self=你，partner=搭档，opponent=对手；判断敌我时必须优先看 relationToYou，不要被 uiLabel 干扰
 - 领出时优先走独立散牌、边张或低位完整牌型，先试探再升级；若手里有完整顺子、连对、钢板或三同张，不要为了打一张单牌随意拆开
 - 结构保护优先级：天王炸/炸弹/同花顺 > 钢板/连对/顺子 > 三同张 > 对子 > 单张；除非抢关键牌权、喂搭档、或拆后能明显加快自己走完，否则不要拆高结构去凑低结构
 - 特别注意：小三同张、小连对、小顺子若还有别的合法单张/对子可出，优先不拆；不要把小三张拆成单牌去送节奏
+- 跟牌前先做三步检查：1. 当前领先者是谁；2. 该领先者 relationToYou 是 partner 还是 opponent；3. 这一手是否真的有必要抢走牌权
 - 跟牌时能小压就小压，避免无谓抬高；若当前领先者是搭档且局面安全，通常不要压搭档，除非你是在送搭档、能顺势连续出牌、或必须阻止对手夺权
 - 对手剩 1 到 2 手、报单或明显即将走完时，优先保留或使用控制牌阻断对手，必要时果断用炸弹抢回牌权
 - 搭档接近走完时，优先送搭档易接的牌型，不要只顾自己最小化出牌而破坏队友节奏
@@ -114,8 +176,11 @@ function buildStructuredHistory(viewer: Seat, actions: ReplayAction[]) {
     winnerSoFar: ReturnType<typeof describeSeat> | null
     actions: Array<{
       order: number
-      seat: Seat
-      relation: SeatRelation
+      seatId: Seat
+      absoluteName: string
+      uiLabel: string
+      team: SeatTeam
+      relationToYou: SeatRelation
       action: 'play' | 'pass'
       cards: string[]
       pattern: string
@@ -136,8 +201,11 @@ function buildStructuredHistory(viewer: Seat, actions: ReplayAction[]) {
     trick.winnerSoFar = action.winningSeat ? describeSeat(viewer, action.winningSeat) : trick.winnerSoFar
     trick.actions.push({
       order: trick.actions.length + 1,
-      seat: action.seat,
-      relation: getSeatRelation(viewer, action.seat),
+      seatId: action.seat,
+      absoluteName: AI_SEAT_NAMES[action.seat],
+      uiLabel: SEAT_LABELS[action.seat],
+      team: SEAT_TEAMS[action.seat],
+      relationToYou: getSeatRelation(viewer, action.seat),
       action: action.action,
       cards: action.play?.cards.map(cardToCode) ?? [],
       pattern: action.play?.label ?? 'pass',
@@ -163,12 +231,18 @@ function buildTurnPrompt(
   const levelText = rankToText(levelRank)
   const handCodes = hand.map(cardToCode)
   const lastAction = actions[actions.length - 1] ?? null
+  const partnerSeat = PARTNER_SEAT[seat]
+  const currentWinningSeat = lastAction?.winningSeat ?? null
+  const currentWinningRelation = currentWinningSeat ? getSeatRelation(seat, currentWinningSeat) : null
+  const dangerousOpponents = (['south', 'east', 'north', 'west'] as Seat[])
+    .filter((actor) => getSeatRelation(seat, actor) === 'opponent' && remainingCounts[actor] <= 2)
+    .map((actor) => describeSeat(seat, actor))
   const payload = {
     perspective: {
-      you: describeSeat(seat, seat),
-      partner: describeSeat(seat, PARTNER_SEAT[seat]),
+      selfSeat: describeSeat(seat, seat),
+      partnerSeat: describeSeat(seat, partnerSeat),
       opponents: (['south', 'east', 'north', 'west'] as Seat[])
-        .filter((actor) => actor !== seat && actor !== PARTNER_SEAT[seat])
+        .filter((actor) => actor !== seat && actor !== partnerSeat)
         .map((actor) => describeSeat(seat, actor)),
     },
     level: {
@@ -186,7 +260,11 @@ function buildTurnPrompt(
     currentTurn: {
       isLeading,
       instruction: isLeading ? '你是本轮领出方，可以主动选择牌型。' : '你是跟牌方，只能压过当前领先牌型，否则过牌。',
-      currentWinningSeat: lastAction?.winningSeat ? describeSeat(seat, lastAction.winningSeat) : null,
+      currentWinningSeat: currentWinningSeat ? describeSeat(seat, currentWinningSeat) : null,
+      currentWinningRelation,
+      dangerousOpponents,
+      partnerRemaining: remainingCounts[partnerSeat],
+      shouldUsuallyYieldToPartner: currentWinningRelation === 'partner' && currentWinningSeat !== null && remainingCounts[currentWinningSeat] > 1,
       targetPlay: currentPlay
         ? {
             type: currentPlay.type,
@@ -200,16 +278,41 @@ function buildTurnPrompt(
     trickHistory: buildStructuredHistory(seat, actions),
   }
 
-  return `请依据下面的结构化局面做出当前回合决策。队伍关系请优先查看 relation 字段。
+  return `请依据下面的结构化局面做出当前回合决策。判断敌我时，请优先查看 seatId / team / relationToYou，不要依赖 uiLabel。
 
 局面数据(JSON):
 ${JSON.stringify(payload, null, 2)}
 
 决策要求:
+- 如果 currentWinningRelation = partner 且 shouldUsuallyYieldToPartner = true，默认不要压这手牌；只有在阻止对手、给搭档送更顺的牌路、或自己能顺势快速走牌时才允许改写牌权
 - 优先保持手牌结构完整，不要为打一张单牌无意义拆三张、连对、顺子、钢板或炸弹
 - 仅当你明确选择过牌时，才返回 {"cards": [], "pass": true, "reason": "..."}
 - 若选择出牌，cards 必须是你当前手牌中的实际编码，并给出一句简短理由
 - 只输出严格 JSON，不要输出 markdown、解释或额外文本`
+}
+
+function parseOpeningGuideResponse(text: string): OpeningGuideResult | null {
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) return null
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      headline?: unknown
+      bullets?: unknown
+    }
+    const headline = typeof parsed.headline === 'string' ? parsed.headline.trim() : ''
+    const bullets = Array.isArray(parsed.bullets)
+      ? parsed.bullets.map((item) => String(item).trim()).filter(Boolean).slice(0, 5)
+      : []
+
+    if (!headline || bullets.length === 0) {
+      return null
+    }
+
+    return { headline, bullets }
+  } catch {
+    return null
+  }
 }
 
 function parseAIResponse(text: string): ParsedAIResponse {
@@ -326,6 +429,32 @@ export async function testOpenRouterConnection(
       ? `连接成功：未检出模型 ${config.model}，可用示例：${fallback}`
       : `连接成功：未检出模型 ${config.model}，请确认模型名。`,
   }
+}
+
+export async function requestOpeningGuide(
+  config: AIConfig,
+  hand: Card[],
+  levelRank: number,
+  signal?: AbortSignal,
+): Promise<OpeningGuideResult> {
+  const payload = buildOpeningGuidePayload(hand, levelRank)
+  const messages: AIMessage[] = [
+    {
+      role: 'system',
+      content: '你是掼蛋记牌训练助手，不是出牌代理。你的任务是为入门用户生成开局记牌引导。只允许关注：大小王、级牌、逢人配、A、K 的数量，以及 10/J/Q/K/A 中自己手里完全缺失的牌面。不要分析低张，不要建议具体出牌，不要扩展到炸弹博弈。严格返回 JSON：{"headline":"一句总提示","bullets":["要点1","要点2","要点3"]}。',
+    },
+    {
+      role: 'user',
+      content: `请根据这份开局牌面数据，为入门难度用户生成 3 到 5 条“开局应该盯什么”的提醒。\n\n${JSON.stringify(payload, null, 2)}`,
+    },
+  ]
+
+  const responseText = await callOpenRouter(config, messages, signal)
+  const parsed = parseOpeningGuideResponse(responseText)
+  if (!parsed) {
+    throw new Error('AI 开局引导回复格式无效')
+  }
+  return parsed
 }
 
 /**

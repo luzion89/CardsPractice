@@ -136,7 +136,7 @@ function buildWinnerQuestion(trick: VisibleTrick, difficulty: Difficulty, rng: (
 
 function buildBigCardCountQuestion(game: GuandanGame, stepIndex: number, difficulty: Difficulty, rng: () => number) {
   const remaining = remainingFaceCounts(game, stepIndex)
-  const pools = [game.levelRank, 14, 16, 17]
+  const pools = [game.levelRank, 13, 14, 16, 17]
   const targetRank = pools[Math.floor(rng() * pools.length)]
   const correct = remaining.byRank.get(targetRank) ?? 0
   const max = totalFaceCount(targetRank)
@@ -319,6 +319,43 @@ function pickStarterFocusRank(trick: VisibleTrick, levelRank: number) {
   return priorityOrder.find((rank) => seenRanks.has(rank)) ?? null
 }
 
+function buildStarterCountQuestion(
+  game: GuandanGame,
+  snapshot: ReplaySnapshot,
+  latestTrick: VisibleTrick,
+  rng: () => number,
+) {
+  const focusRank = pickStarterFocusRank(latestTrick, game.levelRank)
+  if (focusRank !== null) {
+    return buildSpecificRankCountQuestion(
+      game,
+      snapshot.stepIndex,
+      'starter',
+      rng,
+      focusRank,
+      '按实体牌面现在 ',
+    )
+  }
+
+  const weightedBuilders = shuffle([
+    () => buildSpecificRankCountQuestion(game, snapshot.stepIndex, 'starter', rng, game.levelRank, '按实体牌面现在 '),
+    () => buildSpecificRankCountQuestion(game, snapshot.stepIndex, 'starter', rng, 14, '按实体牌面现在 '),
+    () => buildSpecificRankCountQuestion(game, snapshot.stepIndex, 'starter', rng, 13, '按实体牌面现在 '),
+    () => buildSpecificRankCountQuestion(game, snapshot.stepIndex, 'starter', rng, 16, '按实体牌面现在 '),
+    () => buildSpecificRankCountQuestion(game, snapshot.stepIndex, 'starter', rng, 17, '按实体牌面现在 '),
+    () => buildWildCountQuestion(game, snapshot.stepIndex, 'starter', rng),
+  ], rng)
+
+  for (const builder of weightedBuilders) {
+    const question = builder()
+    if (question) {
+      return question
+    }
+  }
+
+  return null
+}
+
 function buildChallengePlan(
   game: GuandanGame,
   snapshot: ReplaySnapshot,
@@ -335,23 +372,10 @@ function buildChallengePlan(
   }
 
   if (difficulty === 'starter') {
-    const focusRank = pickStarterFocusRank(latestTrick, game.levelRank)
-    if (focusRank !== null) {
-      const forcedQuestion = buildSpecificRankCountQuestion(
-        game,
-        snapshot.stepIndex,
-        difficulty,
-        rng,
-        focusRank,
-        '这一轮里它已经出现，按实体牌面现在 ',
-      )
-      return [() => forcedQuestion]
-    }
-
-    const preferWinner = checkpoint % 2 === 1
     return [
-      () => (preferWinner ? buildWinnerQuestion(latestTrick, difficulty, rng) : buildPatternQuestion(latestTrick, recentActions, difficulty, rng)),
-      () => (preferWinner ? buildPatternQuestion(latestTrick, recentActions, difficulty, rng) : buildWinnerQuestion(latestTrick, difficulty, rng)),
+      () => buildStarterCountQuestion(game, snapshot, latestTrick, rng),
+      () => buildBigCardCountQuestion(game, snapshot.stepIndex, difficulty, rng),
+      () => buildWildCountQuestion(game, snapshot.stepIndex, difficulty, rng),
     ]
   }
 

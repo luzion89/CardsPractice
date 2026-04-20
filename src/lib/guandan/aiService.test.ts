@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AIPlayerSession } from './aiService'
+import { AIPlayerSession, requestOpeningGuide } from './aiService'
 import type { Card, PatternPlay, ReplayAction, Seat } from './types'
 
 function buildConfig() {
@@ -65,7 +65,7 @@ describe('AIPlayerSession', () => {
     vi.restoreAllMocks()
   })
 
-  it('sends structured trick leader and relation data in the prompt', async () => {
+  it('sends absolute seat, team, and partner-awareness data in the prompt', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '{"cards":["3a"],"reason":"先出最小单张"}' } }],
     }), { status: 200 }))
@@ -75,16 +75,14 @@ describe('AIPlayerSession', () => {
     const card4 = makeCard('4b-1', 4, 'hearts')
     const actions: ReplayAction[] = [
       makeAction(0, 0, 'north', makeSinglePlay(card4), 'north'),
-      makeAction(1, 0, 'east', null, 'north'),
-      makeAction(2, 1, 'south', makeSinglePlay(card3), 'south'),
     ]
 
     const session = new AIPlayerSession(buildConfig(), 'south', 7)
     await session.requestPlay(
       [card3, card4],
       actions,
-      null,
-      true,
+      makeSinglePlay(card4),
+      false,
       { south: 25, east: 27, north: 26, west: 27 },
     )
 
@@ -95,9 +93,10 @@ describe('AIPlayerSession', () => {
     const prompt = body.messages[1].content
 
     expect(prompt).toContain('"leader"')
-    expect(prompt).toContain('"seat": "north"')
-    expect(prompt).toContain('"relation": "partner"')
-    expect(prompt).toContain('"relation": "opponent"')
+    expect(prompt).toContain('"seatId": "north"')
+    expect(prompt).toContain('"team": "ns"')
+    expect(prompt).toContain('"relationToYou": "partner"')
+    expect(prompt).toContain('"shouldUsuallyYieldToPartner": true')
   })
 
   it('retries request failures three times before succeeding', async () => {
@@ -123,5 +122,18 @@ describe('AIPlayerSession', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(result.pass).toBe(false)
     expect(result.cards).toEqual(['3a'])
+  })
+
+  it('parses starter opening guide responses', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"headline":"先看王和级牌","bullets":["大王小王要先记住。","A 和 K 的总量要随出牌递减。","缺少的 10 以上牌面要优先盯。"]}' } }],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const guide = await requestOpeningGuide(buildConfig(), [makeCard('HA-1', 14, 'hearts')], 9)
+
+    expect(guide.headline).toBe('先看王和级牌')
+    expect(guide.bullets).toHaveLength(3)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

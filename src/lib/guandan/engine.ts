@@ -62,7 +62,7 @@ export const DIFFICULTY_META: Record<Difficulty, DifficultyMeta> = {
   starter: {
     label: '入门',
     reviewDepth: 1,
-    summary: '每轮必答；A、K、王或级牌出现后优先追问剩余张数。',
+    summary: '每轮只问王、级牌、A、K与逢人配等大牌计数题。',
   },
   standard: {
     label: '基础',

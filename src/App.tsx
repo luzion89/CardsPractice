@@ -10,7 +10,7 @@ import {
   TEAM_LABELS,
 } from './lib/guandan/engine'
 import { GameManager, type GamePhase } from './lib/guandan/gameManager'
-import { DEFAULT_AI_CONFIG, testOpenRouterConnection } from './lib/guandan/aiService'
+import { DEFAULT_AI_CONFIG, requestOpeningGuide, testOpenRouterConnection } from './lib/guandan/aiService'
 import type {
   AIConfig,
   Card,
@@ -18,6 +18,7 @@ import type {
   Difficulty,
   GuandanGame,
   PatternPlay,
+  ReplayAction,
   ReplaySnapshot,
   Seat,
 } from './lib/guandan/types'
@@ -47,6 +48,14 @@ type PersistedState = {
   difficulty: Difficulty
   stats: TrainingStats
   aiConfig: AIConfig | null
+  debugMode: boolean
+}
+
+type OpeningGuideState = {
+  headline: string
+  bullets: string[]
+  source: 'ai' | 'local'
+  status: 'loading' | 'ready'
 }
 
 type ModalKind = 'none' | 'settings' | 'info' | 'result'
@@ -99,6 +108,35 @@ function challengeTagLabel(tag: string) {
     case 'recent-trick-detail': return '延迟回忆'
     case 'partner-awareness': return '搭档判断'
     default: return '轮次检索'
+  }
+}
+
+function countCardsByRank(cards: Card[], rank: number) {
+  return cards.filter((card) => card.rank === rank).length
+}
+
+function buildLocalOpeningGuide(cards: Card[], levelRank: number): OpeningGuideState {
+  const bigJoker = countCardsByRank(cards, 17)
+  const smallJoker = countCardsByRank(cards, 16)
+  const levelCards = countCardsByRank(cards, levelRank)
+  const wildCards = cards.filter((card) => card.rank === levelRank && card.suit === 'hearts').length
+  const aces = countCardsByRank(cards, 14)
+  const kings = countCardsByRank(cards, 13)
+  const missingHighFaces = [10, 11, 12, 13, 14]
+    .filter((rank) => countCardsByRank(cards, rank) === 0)
+    .map((rank) => rankToText(rank))
+
+  return {
+    headline: '开局先盯高张数量，再盯 10 以上缺门',
+    bullets: [
+      `先记大牌总量：大王 ${bigJoker}、小王 ${smallJoker}、级牌 ${levelCards}（逢人配 ${wildCards}）、A ${aces}、K ${kings}。`,
+      missingHighFaces.length > 0
+        ? `你手里缺少 ${missingHighFaces.join('、')}，这些 10 以上高张一旦外面出现，要优先记减。`
+        : '你手里 10 到 A 都有覆盖，接下来重点盯外面先打掉了哪些高张。',
+      '入门局先专注“王、级牌、A、K”和 10 以上缺门，不要被低张数量分散注意力。',
+    ],
+    source: 'local',
+    status: 'ready',
   }
 }
 
@@ -227,10 +265,12 @@ function App() {
   const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null)
   const [modal, setModal] = useState<ModalKind>('none')
   const [error, setError] = useState<string | null>(null)
+  const [debugMode, setDebugMode] = useState(() => persisted?.debugMode ?? false)
   const [aiThinking, setAiThinking] = useState(false)
   const [aiReasons, setAiReasons] = useState<Record<number, string>>({})
   const [thinkingSeat, setThinkingSeat] = useState<Seat | null>(null)
   const [aiPhase, setAiPhase] = useState<GamePhase>('waiting')
+  const [openingGuide, setOpeningGuide] = useState<OpeningGuideState | null>(null)
 
   /* ---- AI config ---- */
   const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => persisted?.aiConfig ?? null)
@@ -245,6 +285,8 @@ function App() {
   /* ---- Refs ---- */
   const managerRef = useRef<GameManager | null>(null)
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openingGuideAbortRef = useRef<AbortController | null>(null)
+  const openingGuideRequestIdRef = useRef(0)
 
   /* ---- Derived ---- */
   const snapshot = useMemo(
@@ -260,11 +302,18 @@ function App() {
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
   const isGameOver =
     !game || (gameMode === 'ai' ? aiPhase === 'finished' : (snapshot?.isComplete ?? false))
-  const pressureSeat = snapshot?.currentTrick?.winningSeat ?? snapshot?.currentTrick?.leader ?? snapshot?.nextSeat ?? null
+  const actingSeat = aiThinking ? thinkingSeat : snapshot?.nextSeat ?? null
   const ownHand = useMemo(
     () => (game && snapshot ? remainingHandForSeat(game, snapshot, SELF_SEAT) : []),
     [game, snapshot],
   )
+  const latestVisibleActionBySeat = useMemo(() => {
+    const latest: Partial<Record<Seat, ReplayAction>> = {}
+    for (const action of snapshot?.visibleActions ?? []) {
+      latest[action.seat] = action
+    }
+    return latest
+  }, [snapshot])
 
   const currentTrickPlays: Partial<Record<Seat, PatternPlay | null>> = {}
   if (snapshot?.currentTrick) {
@@ -283,8 +332,62 @@ function App() {
   )
 
   useEffect(() => {
-    debouncedPersist({ difficulty, stats, aiConfig })
-  }, [debouncedPersist, difficulty, stats, aiConfig])
+    debouncedPersist({ difficulty, stats, aiConfig, debugMode })
+  }, [debouncedPersist, difficulty, stats, aiConfig, debugMode])
+
+  useEffect(() => () => {
+    openingGuideAbortRef.current?.abort()
+  }, [])
+
+  const prepareOpeningGuide = useCallback(async (initialHand: Card[], levelRank: number, config: AIConfig | null) => {
+    openingGuideAbortRef.current?.abort()
+    openingGuideRequestIdRef.current += 1
+    const requestId = openingGuideRequestIdRef.current
+    const localGuide = buildLocalOpeningGuide(initialHand, levelRank)
+
+    if (!config?.apiKey) {
+      setOpeningGuide(localGuide)
+      return
+    }
+
+    const controller = new AbortController()
+    openingGuideAbortRef.current = controller
+    setOpeningGuide({ ...localGuide, status: 'loading' })
+
+    try {
+      const aiGuide = await requestOpeningGuide(config, initialHand, levelRank, controller.signal)
+      if (openingGuideRequestIdRef.current !== requestId || controller.signal.aborted) return
+      setOpeningGuide({ ...aiGuide, source: 'ai', status: 'ready' })
+    } catch {
+      if (openingGuideRequestIdRef.current !== requestId || controller.signal.aborted) return
+      setOpeningGuide(localGuide)
+    } finally {
+      if (openingGuideAbortRef.current === controller) {
+        openingGuideAbortRef.current = null
+      }
+    }
+  }, [])
+
+  const handleDifficultyChange = useCallback((nextDifficulty: Difficulty) => {
+    setDifficulty(nextDifficulty)
+
+    if (!game || stepIndex !== 0) {
+      if (nextDifficulty !== 'starter') {
+        openingGuideAbortRef.current?.abort()
+        setOpeningGuide(null)
+      }
+      return
+    }
+
+    if (nextDifficulty !== 'starter') {
+      openingGuideAbortRef.current?.abort()
+      setOpeningGuide(null)
+      return
+    }
+
+    const config = gameMode === 'ai' ? aiConfig : null
+    void prepareOpeningGuide(game.players[SELF_SEAT], game.levelRank, config)
+  }, [aiConfig, game, gameMode, prepareOpeningGuide, stepIndex])
 
   const markConnectionAsDirty = useCallback(() => {
     setAiConnectionStatus('idle')
@@ -345,6 +448,7 @@ function App() {
     setActiveChallenge(null)
     setChallengedTrickIndexes([])
     setAiReasons({})
+    setOpeningGuide(null)
     setAiThinking(false)
     setThinkingSeat(null)
     setAiPhase(resolvedMode === 'ai' ? 'playing' : 'waiting')
@@ -357,6 +461,9 @@ function App() {
       setGame(state.game)
       setStepIndex(0)
       setModal('none')
+      if (difficulty === 'starter') {
+        void prepareOpeningGuide(state.game.players[SELF_SEAT], state.game.levelRank, resolvedConfig)
+      }
     } else {
       // Local fallback mode
       managerRef.current = null
@@ -364,6 +471,9 @@ function App() {
       setGame(g)
       setStepIndex(0)
       setModal('none')
+      if (difficulty === 'starter') {
+        void prepareOpeningGuide(g.players[SELF_SEAT], g.levelRank, null)
+      }
 
       if (resolvedMode === 'ai') {
         setError('未检测到可用 AI 配置，已切换为本地模式。')
@@ -556,7 +666,7 @@ function App() {
       : ''
 
   const tableNote = aiThinking
-    ? `${pressureSeat ? SEAT_LABELS[pressureSeat] : 'AI'} 正在思考...`
+    ? `${actingSeat ? SEAT_LABELS[actingSeat] : 'AI'} 正在思考...`
     : isGameOver && game
       ? '本局已结束，可查看战报或开始新牌局。'
       : !game
@@ -665,6 +775,7 @@ function App() {
               <span className="tag">{roundLabel}</span>
               <span className="tag diff-tag">{DIFFICULTY_META[difficulty].label}</span>
               {gameMode === 'ai' && <span className="tag ai-tag">AI</span>}
+              {debugMode && <span className="tag debug-tag">调试</span>}
               {typeof progress === 'number' && progress > 0 && <span className="tag">{progress}%</span>}
             </div>
           </div>
@@ -725,6 +836,26 @@ function App() {
         </div>
       </section>
 
+      {difficulty === 'starter' && stepIndex === 0 && openingGuide && (
+        <section className="opening-guide-panel">
+          <div className="opening-guide-head">
+            <div>
+              <strong>开局牌面引导</strong>
+              <p>
+                {openingGuide.headline}
+                {openingGuide.status === 'loading' ? ' · AI 增强中' : openingGuide.source === 'ai' ? ' · AI 分析' : ' · 本地摘要'}
+              </p>
+            </div>
+            <span className="opening-guide-badge">入门专注</span>
+          </div>
+          <div className="opening-guide-list">
+            {openingGuide.bullets.map((bullet, index) => (
+              <p key={`${bullet}-${index}`}>{bullet}</p>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Hand panel */}
       <section className="hand-panel">
         <div className="hand-head">
@@ -740,6 +871,30 @@ function App() {
           <p className="hand-empty">已出完所有牌</p>
         )}
       </section>
+
+      {debugMode && gameMode === 'ai' && (
+        <section className="debug-panel">
+          <div className="debug-head">
+            <strong>调试监视器</strong>
+            <span>显示四家最近一次可见 AI 理由</span>
+          </div>
+          <div className="debug-grid">
+            {TABLE_SEATS.map((seat) => {
+              const action = latestVisibleActionBySeat[seat] ?? null
+              const reason = action ? aiReasons[action.index] || '该步未记录理由。' : '尚未看到该座位的 AI 动作。'
+              return (
+                <article key={`debug-${seat}`} className="debug-card">
+                  <div className="debug-card-head">
+                    <strong>{SEAT_LABELS[seat]}</strong>
+                    <span>{action ? action.note : '未行动'}</span>
+                  </div>
+                  <p>{reason}</p>
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Controls */}
       <section className="control-dock">
@@ -848,13 +1003,24 @@ function App() {
                     type="button"
                     key={key}
                     className={`diff-item ${difficulty === key ? 'active' : ''}`}
-                    onClick={() => setDifficulty(key)}
+                    onClick={() => handleDifficultyChange(key)}
                   >
                     <strong>{meta.label}</strong>
                     <small>{meta.summary}</small>
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="dialog-section">
+              <h4>调试显示</h4>
+              <label className="toggle-row">
+                <span>调试模式</span>
+                <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} />
+              </label>
+              <p className="settings-hint">
+                开启后会显示四家最近一次可见 AI 理由，便于排查 prompt 和出牌决策。
+              </p>
             </div>
 
             <div className="dialog-section">
@@ -888,6 +1054,7 @@ function App() {
                       <span className="action-who">{SEAT_LABELS[action.seat]}</span>
                       <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
                       <span className="action-rem">余{action.handCountAfter}</span>
+                      {debugMode && gameMode === 'ai' && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
                     </div>
                   ))}
                 </div>
@@ -907,6 +1074,7 @@ function App() {
                         <div key={action.index} className="action-item">
                           <span className="action-who">{SEAT_LABELS[action.seat]}</span>
                           <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
+                          {debugMode && gameMode === 'ai' && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
                         </div>
                       ))}
                     </div>

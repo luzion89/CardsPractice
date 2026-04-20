@@ -203,6 +203,7 @@
 .tag.level-tag { background: rgba(230, 168, 23, 0.15); color: var(--accent); }
 .tag.diff-tag { background: rgba(52, 152, 219, 0.15); color: var(--blue); }
 .tag.ai-tag { background: rgba(46, 204, 113, 0.15); color: var(--green); }
+.tag.debug-tag { background: rgba(255, 159, 67, 0.16); color: #ffcf86; }
 
 .hud-right {
   display: flex;
@@ -509,6 +510,71 @@
 }
 
 /* ================================================================== */
+/*  Starter Opening Guide                                              */
+/* ================================================================== */
+
+.opening-guide-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, rgba(18, 27, 48, 0.95), rgba(22, 49, 74, 0.88));
+  border: 3px solid rgba(255, 214, 102, 0.42);
+  border-radius: 4px;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.24);
+}
+
+.opening-guide-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.opening-guide-head strong {
+  display: block;
+  font-size: 17px;
+  letter-spacing: 0.06em;
+  color: #ffe07a;
+  margin-bottom: 4px;
+}
+
+.opening-guide-head p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.opening-guide-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 2px solid rgba(255, 214, 102, 0.34);
+  background: rgba(255, 214, 102, 0.12);
+  color: #ffe7a8;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.opening-guide-list {
+  display: grid;
+  gap: 8px;
+}
+
+.opening-guide-list p {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+/* ================================================================== */
 /*  Hand Panel                                                         */
 /* ================================================================== */
 
@@ -603,6 +669,80 @@
   color: var(--ink-soft);
   padding: 16px;
   font-size: 15px;
+}
+
+/* ================================================================== */
+/*  Debug Panel                                                        */
+/* ================================================================== */
+
+.debug-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px 16px;
+  background: rgba(12, 18, 33, 0.88);
+  border: 3px solid rgba(255, 159, 67, 0.28);
+  border-radius: 4px;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.24);
+}
+
+.debug-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.debug-head strong {
+  font-size: 16px;
+  color: #ffcf86;
+  letter-spacing: 0.06em;
+}
+
+.debug-head span {
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.debug-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.debug-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.debug-card-head strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.debug-card-head span {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.debug-card p {
+  margin: 0;
+  color: #ffd9ab;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 /* ================================================================== */
@@ -905,6 +1045,25 @@
   line-height: 1.7;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+}
+
 /* ================================================================== */
 /*  Challenge Dialog                                                   */
 /* ================================================================== */
@@ -1158,6 +1317,12 @@
   color: var(--ink-soft);
 }
 
+.action-reason {
+  color: #ffcf86;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .trick-row {
   margin-bottom: 12px;
 }
@@ -1228,6 +1393,15 @@
 
   .hand-panel {
     padding: 8px 10px;
+  }
+
+  .opening-guide-panel,
+  .debug-panel {
+    padding: 10px 12px;
+  }
+
+  .debug-grid {
+    grid-template-columns: 1fr;
   }
 
   .controls {
