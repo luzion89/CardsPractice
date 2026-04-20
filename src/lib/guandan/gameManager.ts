@@ -26,7 +26,7 @@ import {
   SEATS,
 } from './engine'
 import { resolveCardsFromCodes } from './cardCode'
-import { AIPlayerSession, type AIConfig, type AIPlayResult } from './aiService'
+import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult } from './aiService'
 
 /* ------------------------------------------------------------------ */
 /*  Internal types                                                     */
@@ -329,6 +329,9 @@ export class GameManager {
       )
     } catch (err) {
       this.phase = 'playing'
+      if (err instanceof AIRequestError && err.kind === 'response-format') {
+        return this.applyFallbackDecision(seat, hand, currentPlay, 'AI连续返回不可解析内容')
+      }
       throw err
     }
 
@@ -349,25 +352,13 @@ export class GameManager {
     // Resolve card codes to actual Card objects
     const resolvedCards = resolveCardsFromCodes(aiResult.cards, hand)
     if (!resolvedCards) {
-      // Invalid cards — fallback
-      if (isLeading) {
-        this.lastAIReason = 'AI返回的牌面无法匹配当前手牌，已改用本地最小合法牌'
-        return this.applyFallbackLead(seat, hand)
-      }
-      this.lastAIReason = 'AI返回的牌面无法匹配当前手牌，本手按规则过牌'
-      return this.applyPass(seat)
+      return this.applyFallbackDecision(seat, hand, currentPlay, 'AI返回的牌面无法匹配当前手牌')
     }
 
     // Find a matching legal pattern
     const pattern = findPatternForCards(resolvedCards, hand, this.levelRank, currentPlay)
     if (!pattern) {
-      // Not a legal play — fallback
-      if (isLeading) {
-        this.lastAIReason = 'AI给出的牌型不合法，已改用本地最小合法牌'
-        return this.applyFallbackLead(seat, hand)
-      }
-      this.lastAIReason = 'AI给出的牌型不合法，本手按规则过牌'
-      return this.applyPass(seat)
+      return this.applyFallbackDecision(seat, hand, currentPlay, 'AI给出的牌型不合法')
     }
 
     return this.applyPlay(seat, pattern)
@@ -417,6 +408,47 @@ export class GameManager {
     }
 
     return this.applyPlay(seat, play)
+  }
+
+  private pickFallbackResponse(hand: Card[], currentPlay: PatternPlay): PatternPlay | null {
+    const candidates = enumerateLeadPatterns(hand, this.levelRank)
+      .filter((pattern) => canBeat(pattern, currentPlay))
+
+    if (candidates.length === 0) {
+      return null
+    }
+
+    return candidates.toSorted((left, right) => {
+      const leftTypePenalty = left.type === currentPlay.type ? 0 : 10000
+      const rightTypePenalty = right.type === currentPlay.type ? 0 : 10000
+
+      return leftTypePenalty - rightTypePenalty
+        || left.bombTier - right.bombTier
+        || left.cards.length - right.cards.length
+        || left.primaryValue - right.primaryValue
+        || left.wildCount - right.wildCount
+    })[0]
+  }
+
+  private applyFallbackDecision(
+    seat: Seat,
+    hand: Card[],
+    currentPlay: PatternPlay | null,
+    reason: string,
+  ): ReplayAction {
+    if (!currentPlay) {
+      this.lastAIReason = `${reason}，已改用本地最小合法牌`
+      return this.applyFallbackLead(seat, hand)
+    }
+
+    const response = this.pickFallbackResponse(hand, currentPlay)
+    if (response) {
+      this.lastAIReason = `${reason}，已改用本地最小合法应对`
+      return this.applyPlay(seat, response)
+    }
+
+    this.lastAIReason = `${reason}，本地判断本手无合法可压，按规则过牌`
+    return this.applyPass(seat)
   }
 
   private pushAction(seat: Seat, play: PatternPlay | null): ReplayAction {

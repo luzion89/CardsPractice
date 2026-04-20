@@ -154,6 +154,27 @@ describe('AIPlayerSession', () => {
     expect(result.reason).toBe('保留结构先出最小单张')
   })
 
+  it('parses stringified JSON from non-chat text responses', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ text: '"{\\"cards\\":[\\"3a\\"],\\"reason\\":\\"外层仍是字符串JSON\\"}"' }],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const card3 = makeCard('3a-1', 3, 'spades')
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [card3],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+    )
+
+    expect(result.pass).toBe(false)
+    expect(result.cards).toEqual(['3a'])
+    expect(result.reason).toBe('外层仍是字符串JSON')
+  })
+
   it('parses starter opening guide responses', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '\n\n{"headline":"牌面引导","items":[{"label":"大王","outsideCount":2},{"label":"级牌 9","outsideCount":5}]}' } }],

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { GameManager } from './gameManager'
-import type { AIPlayResult } from './aiService'
+import { AIRequestError, type AIPlayResult } from './aiService'
 
 function buildConfig() {
   return {
     apiKey: 'test-key',
-    model: 'google/gemini-2.0-flash-001',
+    model: 'minimax/minimax-m2.7',
     baseUrl: 'https://openrouter.ai/api/v1',
   }
 }
@@ -58,5 +58,27 @@ describe('GameManager', () => {
     expect(action.action).toBe('play')
     expect(manager.getState().phase).toBe('playing')
     expect(manager.getState().lastAIReason).toBe('AI返回的牌面无法匹配当前手牌，已改用本地最小合法牌')
+  })
+
+  it('falls back to a legal lead when AI keeps returning unparsable content', async () => {
+    const manager = new GameManager(buildConfig(), 17)
+    const state = manager.getState()
+    const currentSeat = state.currentSeat
+    expect(currentSeat).not.toBeNull()
+
+    const sessions = (manager as unknown as {
+      aiSessions: Record<string, { requestPlay: () => Promise<AIPlayResult> }>
+    }).aiSessions
+
+    sessions[currentSeat!].requestPlay = vi.fn().mockRejectedValue(
+      new AIRequestError('已自动重试3次，AI仍未返回有效出牌信息：未找到有效 JSON 对象', false, 'response-format'),
+    )
+
+    const action = await manager.playNextMove()
+
+    expect(action.play).not.toBeNull()
+    expect(action.action).toBe('play')
+    expect(manager.getState().phase).toBe('playing')
+    expect(manager.getState().lastAIReason).toBe('AI连续返回不可解析内容，已改用本地最小合法牌')
   })
 })

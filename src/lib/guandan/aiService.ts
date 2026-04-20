@@ -51,12 +51,16 @@ type ParsedAIResponse =
   | { ok: true; result: AIPlayResult }
   | { ok: false; message: string }
 
-class AIRequestError extends Error {
+export type AIRequestErrorKind = 'auth' | 'rate-limit' | 'request' | 'response-format'
+
+export class AIRequestError extends Error {
+  kind: AIRequestErrorKind
   retryable: boolean
 
-  constructor(message: string, retryable: boolean) {
+  constructor(message: string, retryable: boolean, kind: AIRequestErrorKind = 'request') {
     super(message)
     this.name = 'AIRequestError'
+    this.kind = kind
     this.retryable = retryable
   }
 }
@@ -171,58 +175,208 @@ function normalizeResponseContent(content: unknown): string {
   return ''
 }
 
-function extractFirstJsonObject(text: string) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+type JsonValidator<T> = (value: unknown) => value is T
+
+function extractBalancedJsonSegments(text: string, opening: '{' | '[', closing: '}' | ']') {
+  const segments: string[] = []
   const source = text.replace(/^\uFEFF/, '')
-  let start = -1
-  let depth = 0
-  let inString = false
-  let isEscaped = false
 
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index]
-
-    if (start === -1) {
-      if (char === '{') {
-        start = index
-        depth = 1
-      }
+  for (let start = 0; start < source.length; start += 1) {
+    if (source[start] !== opening) {
       continue
     }
 
-    if (inString) {
-      if (isEscaped) {
-        isEscaped = false
+    let depth = 0
+    let inString = false
+    let isEscaped = false
+
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index]
+
+      if (inString) {
+        if (isEscaped) {
+          isEscaped = false
+          continue
+        }
+        if (char === '\\') {
+          isEscaped = true
+          continue
+        }
+        if (char === '"') {
+          inString = false
+        }
         continue
       }
-      if (char === '\\') {
-        isEscaped = true
-        continue
-      }
+
       if (char === '"') {
-        inString = false
+        inString = true
+        continue
       }
-      continue
-    }
 
-    if (char === '"') {
-      inString = true
-      continue
-    }
+      if (char === opening) {
+        depth += 1
+        continue
+      }
 
-    if (char === '{') {
-      depth += 1
-      continue
-    }
-
-    if (char === '}') {
-      depth -= 1
-      if (depth === 0) {
-        return source.slice(start, index + 1)
+      if (char === closing) {
+        depth -= 1
+        if (depth === 0) {
+          segments.push(source.slice(start, index + 1))
+          start = index
+          break
+        }
       }
     }
   }
 
+  return segments
+}
+
+function collectJsonCandidates(text: string) {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+  const source = text.replace(/^\uFEFF/, '')
+
+  const push = (value: string | null | undefined) => {
+    const normalized = value?.trim()
+    if (!normalized || seen.has(normalized)) {
+      return
+    }
+    seen.add(normalized)
+    candidates.push(normalized)
+  }
+
+  push(source)
+
+  const codeFencePattern = /```(?:json)?\s*([\s\S]*?)```/gi
+  let match: RegExpExecArray | null
+  while ((match = codeFencePattern.exec(source)) !== null) {
+    push(match[1])
+  }
+
+  for (const segment of extractBalancedJsonSegments(source, '{', '}')) {
+    push(segment)
+  }
+
+  for (const segment of extractBalancedJsonSegments(source, '[', ']')) {
+    push(segment)
+  }
+
+  return candidates
+}
+
+function walkParsedJson<T>(
+  value: unknown,
+  validator: JsonValidator<T>,
+  seenTexts: Set<string>,
+  depth: number,
+): T | null {
+  if (validator(value)) {
+    return value
+  }
+
+  if (depth >= 6) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    return findJsonValue(value, validator, seenTexts, depth + 1)
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = walkParsedJson(item, validator, seenTexts, depth + 1)
+      if (found) {
+        return found
+      }
+    }
+    return null
+  }
+
+  if (!isPlainObject(value)) {
+    return null
+  }
+
+  const preferredKeys = ['result', 'response', 'output', 'answer', 'data', 'json', 'content', 'message', 'arguments']
+  for (const key of preferredKeys) {
+    if (!(key in value)) {
+      continue
+    }
+    const found = walkParsedJson(value[key], validator, seenTexts, depth + 1)
+    if (found) {
+      return found
+    }
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const found = walkParsedJson(nestedValue, validator, seenTexts, depth + 1)
+    if (found) {
+      return found
+    }
+  }
+
   return null
+}
+
+function findJsonValue<T>(
+  text: string,
+  validator: JsonValidator<T>,
+  seenTexts = new Set<string>(),
+  depth = 0,
+): T | null {
+  if (depth >= 6) {
+    return null
+  }
+
+  for (const candidate of collectJsonCandidates(text)) {
+    if (seenTexts.has(candidate)) {
+      continue
+    }
+    seenTexts.add(candidate)
+
+    try {
+      const parsed = JSON.parse(candidate)
+      const found = walkParsedJson(parsed, validator, seenTexts, depth + 1)
+      if (found) {
+        return found
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return null
+}
+
+type AIResponsePayload = {
+  cards?: unknown
+  card?: unknown
+  pass?: unknown
+  reason?: unknown
+}
+
+function isAIResponsePayload(value: unknown): value is AIResponsePayload {
+  return isPlainObject(value) && ('cards' in value || 'card' in value || 'pass' in value || 'reason' in value)
+}
+
+type OpeningGuidePayload = {
+  headline?: unknown
+  items?: unknown
+}
+
+function isOpeningGuidePayload(value: unknown): value is OpeningGuidePayload {
+  return isPlainObject(value) && ('headline' in value || 'items' in value)
+}
+
+function splitCardCodes(value: string) {
+  return value
+    .split(/[\s,，、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
@@ -389,14 +543,10 @@ ${JSON.stringify(payload, null, 2)}
 }
 
 function parseOpeningGuideResponse(text: string): OpeningGuideResult | null {
-  const jsonMatch = extractFirstJsonObject(text)
-  if (!jsonMatch) return null
+  const parsed = findJsonValue(text, isOpeningGuidePayload)
+  if (!parsed) return null
 
   try {
-    const parsed = JSON.parse(jsonMatch) as {
-      headline?: unknown
-      items?: unknown
-    }
     const headline = typeof parsed.headline === 'string' ? parsed.headline.trim() : ''
     const items = Array.isArray(parsed.items)
       ? parsed.items
@@ -425,15 +575,22 @@ function parseOpeningGuideResponse(text: string): OpeningGuideResult | null {
 }
 
 function parseAIResponse(text: string): ParsedAIResponse {
-  const jsonMatch = extractFirstJsonObject(text)
-  if (!jsonMatch) {
+  const parsed = findJsonValue(text, isAIResponsePayload)
+  if (!parsed) {
     return { ok: false, message: '未找到有效 JSON 对象' }
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch)
-    const cards = Array.isArray(parsed.cards) ? parsed.cards.map(String) : []
-    if (parsed.pass === true) {
+    const cards = Array.isArray(parsed.cards)
+      ? parsed.cards.map(String)
+      : typeof parsed.cards === 'string'
+        ? splitCardCodes(parsed.cards)
+        : typeof parsed.card === 'string'
+          ? splitCardCodes(parsed.card)
+          : []
+    const pass = parsed.pass === true || (typeof parsed.pass === 'string' && parsed.pass.trim().toLowerCase() === 'true')
+
+    if (pass) {
       return {
         ok: true,
         result: {
@@ -483,13 +640,19 @@ async function callOpenRouter(
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => '')
-    if (response.status === 401) throw new AIRequestError('API密钥无效，请检查设置。', false)
-    if (response.status === 429) throw new AIRequestError('请求过于频繁，请稍后再试。', false)
-    throw new AIRequestError(`AI请求失败 (${response.status}): ${errBody.slice(0, 120)}`, true)
+    if (response.status === 401) throw new AIRequestError('API密钥无效，请检查设置。', false, 'auth')
+    if (response.status === 429) throw new AIRequestError('请求过于频繁，请稍后再试。', false, 'rate-limit')
+    throw new AIRequestError(`AI请求失败 (${response.status}): ${errBody.slice(0, 120)}`, true, 'request')
   }
 
   const data = await response.json()
-  return normalizeResponseContent(data.choices?.[0]?.message?.content)
+  const choice = data.choices?.[0]
+  return normalizeResponseContent(
+    choice?.message?.content
+      ?? choice?.text
+      ?? choice?.message?.tool_calls?.[0]?.function?.arguments
+      ?? '',
+  )
 }
 
 export async function testOpenRouterConnection(
@@ -621,7 +784,7 @@ export class AIPlayerSession {
         }
 
         if (isLastAttempt) {
-          throw new AIRequestError(`已自动重试3次，AI仍未返回有效出牌信息：${parsed.message}`, false)
+          throw new AIRequestError(`已自动重试3次，AI仍未返回有效出牌信息：${parsed.message}`, false, 'response-format')
         }
 
         messages.push({ role: 'assistant', content: responseText })
