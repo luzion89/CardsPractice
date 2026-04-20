@@ -21,7 +21,8 @@ import type {
   ReplaySnapshot,
   Seat,
 } from './lib/guandan/types'
-import { CardGroup, PlayingCard, type CardSize } from './components/PlayingCard'
+import { CardGroup, PlayingCard } from './components/PlayingCard'
+import { CARD_SIZE_METRICS, type CardSize } from './components/cardMetrics'
 import './App.css'
 
 /* ================================================================== */
@@ -168,12 +169,41 @@ function TablePlaySlot({
 }
 
 function HandRack({ cards, levelRank }: { cards: Card[]; levelRank: number }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [containerWidth, setContainerWidth] = useState(0)
+
+  useEffect(() => {
+    const node = containerRef.current
+    if (!node) return
+
+    const update = () => setContainerWidth(node.clientWidth)
+    update()
+
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  const availableWidth = Math.max(containerWidth, 260)
+  const size: CardSize = availableWidth >= 920 ? 'md' : availableWidth >= 560 ? 'sm' : 'xs'
+  const metrics = CARD_SIZE_METRICS[size]
+  const preferredStep = size === 'md' ? 28 : size === 'sm' ? 20 : 14
+  const fitStep = cards.length > 1
+    ? Math.floor((availableWidth - metrics.w) / Math.max(1, cards.length - 1))
+    : metrics.w
+  const step = cards.length > 1 ? Math.max(6, Math.min(preferredStep, fitStep)) : 0
+  const rackWidth = cards.length > 1 ? metrics.w + step * (cards.length - 1) : metrics.w
+
   return (
-    <div className="hand-scroll">
-      <div className="hand-rack hand-rack-flat">
-        {cards.map((card) => (
-          <div key={card.id} className="hand-card-shell">
-            <PlayingCard card={card} levelRank={levelRank} size="md" />
+    <div className="hand-scroll" ref={containerRef}>
+      <div className="hand-rack hand-rack-overlap" style={{ width: rackWidth, height: metrics.h }}>
+        {cards.map((card, index) => (
+          <div
+            key={card.id}
+            className="hand-card-shell overlap"
+            style={{ left: index * step, zIndex: index + 1 }}
+          >
+            <PlayingCard card={card} levelRank={levelRank} size={size} />
           </div>
         ))}
       </div>
@@ -303,6 +333,7 @@ function App() {
     const resolvedMode = options?.mode ?? gameMode
     const resolvedConfig = options?.config ?? aiConfig
 
+    managerRef.current?.abort()
     setError(null)
     setActiveChallenge(null)
     setChallengedTrickIndexes([])
@@ -335,10 +366,47 @@ function App() {
     if (activeChallenge || isGameOver || aiThinking) return
 
     if (managerRef.current && gameMode === 'ai') {
-      // AI mode: generate next move
       const mgr = managerRef.current
+
+      // If user stepped backward, reveal already-generated actions first.
+      const existingState = mgr.getState()
+      if (stepIndex < existingState.game.actions.length) {
+        const nextStep = Math.min(existingState.game.actions.length, stepIndex + 1)
+        const planned = getChallengeForAdvance(
+          existingState.game,
+          stepIndex,
+          nextStep,
+          difficulty,
+          challengedTrickIndexes,
+        )
+
+        startTransition(() => {
+          setGame(existingState.game)
+          setStepIndex(nextStep)
+
+          if (planned) {
+            setChallengedTrickIndexes((v) => [...v, planned.trickIndex])
+            setActiveChallenge({
+              trickIndex: planned.trickIndex,
+              question: planned.question,
+              selectedIndex: null,
+              isCorrect: null,
+            })
+          } else if (existingState.phase === 'finished' && nextStep >= existingState.game.actions.length) {
+            setModal('result')
+          }
+        })
+        return
+      }
+
+      if (existingState.phase === 'finished') {
+        setModal('result')
+        return
+      }
+
+      // AI mode: generate next move
       setAiThinking(true)
-      setThinkingSeat(mgr.getState().currentSeat)
+      setThinkingSeat(existingState.currentSeat)
       setError(null)
       try {
         await mgr.playNextMove()

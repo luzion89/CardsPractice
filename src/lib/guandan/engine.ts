@@ -1527,9 +1527,14 @@ export function buildReplaySnapshot(game: GuandanGame, stepIndex: number): Repla
     completedTricks,
     currentTrick: visibleTricks.at(-1) ?? null,
     remainingCounts,
-    nextSeat: clampedStep < game.actions.length ? game.actions[clampedStep].seat : null,
+    nextSeat:
+      clampedStep < game.actions.length
+        ? game.actions[clampedStep].seat
+        : game.actions.length === 0
+          ? game.startingSeat
+          : null,
     lastAction,
-    isComplete: clampedStep >= game.actions.length,
+    isComplete: game.actions.length > 0 && clampedStep >= game.actions.length,
     finishOrder: game.finishOrder,
   }
 }

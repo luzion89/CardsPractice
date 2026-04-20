@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=ZCOOL+QingKe+HuangYou&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DotGothic16&family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
 
 :root {
   /* Table colors */
@@ -13,18 +13,18 @@
   --table-shadow: inset 0 2px 40px rgba(0, 0, 0, 0.3);
 
   /* UI colors */
-  --bg: #131a2f;
-  --bg-soft: #1c2442;
-  --panel: #0f3460;
-  --panel-light: #1a4a7a;
+  --bg: #101321;
+  --bg-soft: #1a2241;
+  --panel: #22315d;
+  --panel-light: #35518a;
   --surface: #fff;
-  --ink: #e4e4e4;
-  --ink-soft: #a0aab4;
-  --accent: #e6a817;
-  --accent-light: rgba(230, 168, 23, 0.2);
-  --red: #e74c3c;
-  --green: #2ecc71;
-  --blue: #3498db;
+  --ink: #eef3ff;
+  --ink-soft: #b5c2dc;
+  --accent: #ffd166;
+  --accent-light: rgba(255, 209, 102, 0.2);
+  --red: #ff6b6b;
+  --green: #8fdc6c;
+  --blue: #63b3ff;
 
   /* Card colors */
   --card-bg: #ffffff;
@@ -34,8 +34,8 @@
   --card-black: #1a1a2e;
 
   /* Typography */
-  --font: 'ZCOOL QingKe HuangYou', 'Microsoft YaHei', sans-serif;
-  --font-pixel: 'Pixelify Sans', 'ZCOOL QingKe HuangYou', monospace;
+  --font: 'Noto Sans SC', 'Microsoft YaHei UI', sans-serif;
+  --font-display: 'DotGothic16', 'Noto Sans SC', monospace;
   --mono: 'Menlo', 'Consolas', monospace;
 
   /* Spacing */
@@ -51,20 +51,28 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font: 14px/1.5 var(--font);
+  font: 16px/1.7 var(--font);
   font-weight: 500;
   color: var(--ink);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%),
+    radial-gradient(circle at 20% 20%, rgba(99, 179, 255, 0.08), transparent 22%),
+    radial-gradient(circle at 80% 0%, rgba(255, 209, 102, 0.08), transparent 18%),
     repeating-linear-gradient(
       0deg,
-      rgba(255, 255, 255, 0.015) 0px,
-      rgba(255, 255, 255, 0.015) 1px,
+      rgba(255, 255, 255, 0.03) 0px,
+      rgba(255, 255, 255, 0.03) 1px,
       transparent 1px,
-      transparent 3px
+      transparent 4px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.02) 0px,
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 4px
     ),
     var(--bg);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
 }
 
 html {
@@ -79,8 +87,9 @@ h1, h2, h3, h4, p { margin: 0; }
 button, input { font: inherit; }
 button { cursor: pointer; }
 
-h1, h2, h3, .app-title, .landing-title {
-  font-family: var(--font-pixel);
+h1, h2, h3, .app-title, .landing-title,
+.ctrl-btn, .tag, .score-value, .score-label, .seat-role, .seat-meta {
+  font-family: var(--font-display);
 }
 
 button:focus-visible,
