@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AIPlayerSession, requestOpeningGuide } from './aiService'
+import { AIPlayerSession, requestOpeningGuide, type AILegalActionOption } from './aiService'
 import type { Card, PatternPlay, ReplayAction, Seat } from './types'
 
 function buildConfig() {
@@ -55,6 +55,16 @@ function makeAction(
   }
 }
 
+function buildLegalActions(cards: string[]): AILegalActionOption[] {
+  return cards.map((card, index) => ({
+    actionId: `A${String(index + 1).padStart(2, '0')}`,
+    action: 'play',
+    label: `候选 ${index + 1}`,
+    detail: `候选 ${index + 1}`,
+    cards: [card],
+  }))
+}
+
 describe('AIPlayerSession', () => {
   beforeEach(() => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:4173' } })
@@ -67,7 +77,7 @@ describe('AIPlayerSession', () => {
 
   it('sends absolute seat, team, and partner-awareness data in the prompt', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      choices: [{ message: { content: '{"cards":["3a"],"reason":"先出最小单张"}' } }],
+      choices: [{ message: { content: '{"actionId":"A01","reason":"先出最小单张"}' } }],
     }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -84,6 +94,7 @@ describe('AIPlayerSession', () => {
       makeSinglePlay(card4),
       false,
       { south: 25, east: 27, north: 26, west: 27 },
+      buildLegalActions(['3a']),
     )
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -92,11 +103,35 @@ describe('AIPlayerSession', () => {
     }
     const prompt = body.messages[1].content
 
-    expect(prompt).toContain('"leader"')
+    expect(prompt).toContain('leader=')
     expect(prompt).toContain('"seatId": "north"')
     expect(prompt).toContain('"team": "ns"')
     expect(prompt).toContain('"relationToYou": "partner"')
     expect(prompt).toContain('"shouldUsuallyYieldToPartner": true')
+    expect(prompt).toContain('"legalActionLines"')
+    expect(prompt).toContain('A01 | play | 候选 1 | 3a')
+  })
+
+  it('parses actionId responses from structured output', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"actionId":"A02","reason":"选择第二个合法动作"}' } }],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const card3 = makeCard('3a-1', 3, 'spades')
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [card3],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+      buildLegalActions(['3a', '4b']),
+    )
+
+    expect(result.actionId).toBe('A02')
+    expect(result.cards).toEqual([])
+    expect(result.reason).toBe('选择第二个合法动作')
   })
 
   it('retries request failures three times before succeeding', async () => {
@@ -122,6 +157,75 @@ describe('AIPlayerSession', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(result.pass).toBe(false)
     expect(result.cards).toEqual(['3a'])
+  })
+
+  it('switches to a structured-output fallback model after invalid minimax output', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{
+          finish_reason: 'length',
+          message: {
+            content: null,
+            reasoning: '我先分析局面，再决定出牌。',
+          },
+        }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: '{"actionId":"A01","reason":"备用模型返回合法动作"}' } }],
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [makeCard('3a-1', 3, 'spades')],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+      buildLegalActions(['3a']),
+    )
+
+    const secondCall = fetchMock.mock.calls[1] as [string, RequestInit]
+    const secondBody = JSON.parse(String(secondCall[1].body)) as { model: string }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(secondBody.model).toBe('google/gemini-2.0-flash-001')
+    expect(result.actionId).toBe('A01')
+    expect(result.reason).toBe('备用模型返回合法动作')
+  })
+
+  it('switches to the fallback model when the primary model is rate-limited', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: {
+          message: 'Provider returned error',
+          metadata: {
+            raw: 'temporarily rate-limited upstream',
+          },
+        },
+      }), { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: '{"actionId":"A01","reason":"限流后切备用模型"}' } }],
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [makeCard('3a-1', 3, 'spades')],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+      buildLegalActions(['3a']),
+    )
+
+    const secondCall = fetchMock.mock.calls[1] as [string, RequestInit]
+    const secondBody = JSON.parse(String(secondCall[1].body)) as { model: string }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(secondBody.model).toBe('google/gemini-2.0-flash-001')
+    expect(result.actionId).toBe('A01')
+    expect(result.reason).toBe('限流后切备用模型')
   })
 
   it('extracts the first valid JSON object even with leading blank lines and content parts', async () => {

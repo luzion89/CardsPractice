@@ -18,15 +18,26 @@ export const DEFAULT_AI_CONFIG: Omit<AIConfig, 'apiKey'> = {
   baseUrl: 'https://openrouter.ai/api/v1',
 }
 
+const STRUCTURED_OUTPUT_FALLBACK_MODEL = 'google/gemini-2.0-flash-001'
+
 interface AIMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
 
 export interface AIPlayResult {
+  actionId?: string
   cards: string[]
   pass: boolean
   reason: string
+}
+
+export interface AILegalActionOption {
+  actionId: string
+  action: 'play' | 'pass'
+  label: string
+  detail: string
+  cards: string[]
 }
 
 export interface AIConnectivityResult {
@@ -100,6 +111,14 @@ function describeSeat(viewer: Seat, actor: Seat) {
     seatId: actor,
     absoluteName: AI_SEAT_NAMES[actor],
     uiLabel: SEAT_LABELS[actor],
+    team: SEAT_TEAMS[actor],
+    relationToYou: getSeatRelation(viewer, actor),
+  }
+}
+
+function describeSeatForPrompt(viewer: Seat, actor: Seat) {
+  return {
+    seatId: actor,
     team: SEAT_TEAMS[actor],
     relationToYou: getSeatRelation(viewer, actor),
   }
@@ -370,6 +389,9 @@ function findJsonValue<T>(
 }
 
 type AIResponsePayload = {
+  actionId?: unknown
+  optionId?: unknown
+  choiceId?: unknown
   cards?: unknown
   card?: unknown
   pass?: unknown
@@ -377,7 +399,7 @@ type AIResponsePayload = {
 }
 
 function isAIResponsePayload(value: unknown): value is AIResponsePayload {
-  return isPlainObject(value) && ('cards' in value || 'card' in value || 'pass' in value || 'reason' in value)
+  return isPlainObject(value) && ('actionId' in value || 'optionId' in value || 'choiceId' in value || 'cards' in value || 'card' in value || 'pass' in value || 'reason' in value)
 }
 
 type OpeningGuidePayload = {
@@ -411,6 +433,7 @@ type OpenRouterRequestOptions = {
   responseFormat?: OpenRouterResponseFormat
   enableResponseHealing?: boolean
   maxTokens?: number
+  temperature?: number
 }
 
 type OpenRouterCallResult = {
@@ -426,6 +449,10 @@ type OpenRouterChoice = {
     content?: unknown
     parsed?: unknown
     output_text?: unknown
+    reasoning?: unknown
+    reasoning_details?: Array<{
+      text?: unknown
+    }>
     function_call?: {
       arguments?: unknown
     }
@@ -450,21 +477,16 @@ function buildPlayResponseFormat(): OpenRouterResponseFormat {
       schema: {
         type: 'object',
         properties: {
-          cards: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '当前回合选择打出的牌面编码；过牌时返回空数组。',
-          },
-          pass: {
-            type: 'boolean',
-            description: '只有在明确选择过牌时才为 true。',
+          actionId: {
+            type: 'string',
+            description: '必须从 legalActions 里原样选择一个 actionId。',
           },
           reason: {
             type: 'string',
             description: '一句简短中文理由。',
           },
         },
-        required: ['cards', 'reason'],
+        required: ['actionId', 'reason'],
         additionalProperties: false,
       },
     },
@@ -543,6 +565,8 @@ function extractResponseText(data: OpenRouterChatResponse): OpenRouterCallResult
       ?? choice?.message?.function_call?.arguments
       ?? choice?.message?.parsed
       ?? choice?.message?.output_text
+      ?? choice?.message?.reasoning_details
+      ?? choice?.message?.reasoning
       ?? choice?.output_text
       ?? '',
   )
@@ -559,46 +583,22 @@ function extractResponseText(data: OpenRouterChatResponse): OpenRouterCallResult
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
   const levelText = rankToText(levelRank)
-  return `你是一个掼蛋(Guandan)高手，你的固定座位是 ${seat}（${AI_SEAT_NAMES[seat]}），固定搭档是 ${PARTNER_SEAT[seat]}（${AI_SEAT_NAMES[PARTNER_SEAT[seat]]}）。南北为一队，东西为一队。
+  return `你是掼蛋(Guandan)策略代理，固定座位是 ${seat}（${AI_SEAT_NAMES[seat]}），固定搭档是 ${PARTNER_SEAT[seat]}（${AI_SEAT_NAMES[PARTNER_SEAT[seat]]}）。南北一队，东西一队。本局级牌是 ${levelText}，红桃${levelText}是逢人配。
 
-重要说明：
-- user interface 里的“自己/下家/对家/上家”只是从南家视角生成的界面称呼，不是你判断敌我的依据。
-- 你判断敌我时，必须只看结构化数据中的 seatId、team、relationToYou。
-- 如果 relationToYou = partner，默认那就是你的搭档；除非明确有抢权、送牌或拦对手的理由，否则不要去压搭档。
+你本回合不需要自己拼牌码。局面数据里的 legalActions 已经是当前全部合法动作，你只能从其中选择一个 actionId。
 
-掼蛋规则：
-- 两副标准扑克牌（共108张），四人游戏，南北为一队，东西为一队
-- 本局级牌：${levelText}，红桃${levelText}是"逢人配"（万能牌，可替代除大小王外的任何牌）
-- 牌力大小：2 < 3 < ... < K < A < 级牌(${levelText}) < 小王 < 大王
-- 牌型：单张、对子、三同张、三带二(夯)、顺子(5+连续)、连对(3+连续对)、钢板(2+连续三同张)、炸弹(4+同点数)、同花顺(5+同花色连续)、天王炸(4张王)
-- 炸弹大小：4张 < 5张 < 同花顺 < 6张 < 7张 < 8张 < 天王炸
-- 跟牌必须压过上家出的牌，否则过牌
-- 炸弹可以压任何非炸弹牌型
+决策时遵守这些原则：
+- 只根据 seatId、team、relationToYou 判断敌我，不要依赖 uiLabel。
+- 若当前领先者是搭档且局面安全，默认不要压搭档；除非是在送搭档、阻止对手或自己能顺势连续走牌。
+- 能小压就小压，尽量保留炸弹、顺子、连对、钢板、三同张等高价值结构。
+- 对手将走完时提高控牌和抢权意愿；搭档将走完时提高送牌意愿。
+- 如果想过牌，只能选择 legalActions 中 action="pass" 的 actionId。
 
-牌面编码：
-- 1=A, 2=2, 3=3, ..., 10=10, 11=J, 12=Q, 13=K
-- 花色: a=♠黑桃, b=♥红桃, c=♣梅花, d=♦方块
-- 例: 1a=A♠, 13b=K♥, 11c=J♣, 5d=5♦
-- SJ=小王, BJ=大王
-
-策略要点：
-- relationToYou 字段含义：self=你，partner=搭档，opponent=对手；判断敌我时必须优先看 relationToYou，不要被 uiLabel 干扰
-- 领出时优先走独立散牌、边张或低位完整牌型，先试探再升级；若手里有完整顺子、连对、钢板或三同张，不要为了打一张单牌随意拆开
-- 结构保护优先级：天王炸/炸弹/同花顺 > 钢板/连对/顺子 > 三同张 > 对子 > 单张；除非抢关键牌权、喂搭档、或拆后能明显加快自己走完，否则不要拆高结构去凑低结构
-- 特别注意：小三同张、小连对、小顺子若还有别的合法单张/对子可出，优先不拆；不要把小三张拆成单牌去送节奏
-- 跟牌前先做三步检查：1. 当前领先者是谁；2. 该领先者 relationToYou 是 partner 还是 opponent；3. 这一手是否真的有必要抢走牌权
-- 跟牌时能小压就小压，避免无谓抬高；若当前领先者是搭档且局面安全，通常不要压搭档，除非你是在送搭档、能顺势连续出牌、或必须阻止对手夺权
-- 对手剩 1 到 2 手、报单或明显即将走完时，优先保留或使用控制牌阻断对手，必要时果断用炸弹抢回牌权
-- 搭档接近走完时，优先送搭档易接的牌型，不要只顾自己最小化出牌而破坏队友节奏
-- 逢人配优先用于补强关键组合（顺子、连对、钢板、夯、炸弹边缘位），不要轻易当普通小单牌浪费
-- 只有在没有其他合法选择，或拆牌后能显著优化整体出完路线时，才允许拆三张、连对、顺子、钢板或炸弹
-
-请严格以JSON格式回复，不要添加任何其他文字或markdown标记。
-出牌: {"cards": ["1a", "1d"], "reason": "简短理由"}
-过牌: {"cards": [], "pass": true, "reason": "简短理由"}`
+必须严格返回 JSON，且只能使用这个格式：{"actionId":"A03","reason":"一句中文理由"}
+不要返回 cards，不要输出 markdown，不要附加解释。`
 }
 
-function buildStructuredHistory(viewer: Seat, actions: ReplayAction[]) {
+function buildStructuredHistory(viewer: Seat, actions: ReplayAction[], maxTricks = 2) {
   const history = new Map<number, {
     trickNumber: number
     leader: ReturnType<typeof describeSeat>
@@ -645,7 +645,31 @@ function buildStructuredHistory(viewer: Seat, actions: ReplayAction[]) {
     history.set(action.trickIndex, trick)
   }
 
-  return [...history.values()]
+  const grouped = [...history.values()]
+  return grouped.slice(Math.max(0, grouped.length - maxTricks))
+}
+
+function buildCompactHistoryLines(viewer: Seat, actions: ReplayAction[]) {
+  return buildStructuredHistory(viewer, actions, 2).map((trick) => {
+    const actionSummary = trick.actions
+      .map((action) => `${action.seatId}/${action.relationToYou}/${action.action === 'play' ? `${action.pattern}[${action.cards.join(' ')}]` : 'pass'}`)
+      .join(' -> ')
+    return `T${trick.trickNumber} leader=${trick.leader.seatId} winner=${trick.winnerSoFar?.seatId ?? 'unknown'} | ${actionSummary}`
+  })
+}
+
+function buildLegalActionLines(legalActions: AILegalActionOption[]) {
+  return legalActions.map((option) => `${option.actionId} | ${option.action} | ${option.label} | ${option.cards.join(' ') || 'pass'}`)
+}
+
+function extractActionIdHint(text: string, legalActions: AILegalActionOption[]) {
+  const validIds = new Set(legalActions.map((option) => option.actionId.toUpperCase()))
+  const matches = text.toUpperCase().match(/\b(?:A\d{2}|P00)\b/g) ?? []
+  const uniqueMatches = [...new Set(matches.filter((match) => validIds.has(match)))]
+  if (uniqueMatches.length === 1) {
+    return uniqueMatches[0]
+  }
+  return null
 }
 
 function buildTurnPrompt(
@@ -656,68 +680,59 @@ function buildTurnPrompt(
   isLeading: boolean,
   levelRank: number,
   remainingCounts: Record<Seat, number>,
+  legalActions: AILegalActionOption[],
 ): string {
-  const levelText = rankToText(levelRank)
-  const handCodes = hand.map(cardToCode)
   const lastAction = actions[actions.length - 1] ?? null
   const partnerSeat = PARTNER_SEAT[seat]
   const currentWinningSeat = lastAction?.winningSeat ?? null
   const currentWinningRelation = currentWinningSeat ? getSeatRelation(seat, currentWinningSeat) : null
   const dangerousOpponents = (['south', 'east', 'north', 'west'] as Seat[])
     .filter((actor) => getSeatRelation(seat, actor) === 'opponent' && remainingCounts[actor] <= 2)
-    .map((actor) => describeSeat(seat, actor))
+    .map((actor) => actor)
   const payload = {
     perspective: {
-      selfSeat: describeSeat(seat, seat),
-      partnerSeat: describeSeat(seat, partnerSeat),
+      selfSeat: describeSeatForPrompt(seat, seat),
+      partnerSeat: describeSeatForPrompt(seat, partnerSeat),
       opponents: (['south', 'east', 'north', 'west'] as Seat[])
         .filter((actor) => actor !== seat && actor !== partnerSeat)
-        .map((actor) => describeSeat(seat, actor)),
+        .map((actor) => describeSeatForPrompt(seat, actor)),
     },
     level: {
-      rank: levelText,
-      wildCard: `红桃${levelText}`,
+      rank: rankToText(levelRank),
+      wildCard: `红桃${rankToText(levelRank)}`,
     },
     hand: {
       count: hand.length,
-      cards: handCodes,
     },
+      legalActionLines: buildLegalActionLines(legalActions),
     remainingCounts: (['south', 'east', 'north', 'west'] as Seat[]).map((actor) => ({
-      ...describeSeat(seat, actor),
+      ...describeSeatForPrompt(seat, actor),
       remaining: remainingCounts[actor],
     })),
     currentTurn: {
       isLeading,
-      instruction: isLeading ? '你是本轮领出方，可以主动选择牌型。' : '你是跟牌方，只能压过当前领先牌型，否则过牌。',
-      currentWinningSeat: currentWinningSeat ? describeSeat(seat, currentWinningSeat) : null,
+      currentWinningSeat: currentWinningSeat ? describeSeatForPrompt(seat, currentWinningSeat) : null,
       currentWinningRelation,
       dangerousOpponents,
       partnerRemaining: remainingCounts[partnerSeat],
       shouldUsuallyYieldToPartner: currentWinningRelation === 'partner' && currentWinningSeat !== null && remainingCounts[currentWinningSeat] > 1,
       targetPlay: currentPlay
-        ? {
-            type: currentPlay.type,
-            label: currentPlay.label,
-            detail: currentPlay.detail,
-            cards: currentPlay.cards.map(cardToCode),
-            wildCount: currentPlay.wildCount,
-          }
+        ? `${currentPlay.label} | ${currentPlay.cards.map(cardToCode).join(' ')}`
         : null,
     },
-    trickHistory: buildStructuredHistory(seat, actions),
+    recentTrickHistory: buildCompactHistoryLines(seat, actions),
   }
 
-  return `请依据下面的结构化局面做出当前回合决策。判断敌我时，请优先查看 seatId / team / relationToYou，不要依赖 uiLabel。
+  return `请依据下面的结构化局面做出当前回合决策。你只能从 legalActionLines 里选择一个 actionId，不能自造牌码或动作。
 
 局面数据(JSON):
 ${JSON.stringify(payload, null, 2)}
 
 决策要求:
-- 如果 currentWinningRelation = partner 且 shouldUsuallyYieldToPartner = true，默认不要压这手牌；只有在阻止对手、给搭档送更顺的牌路、或自己能顺势快速走牌时才允许改写牌权
-- 优先保持手牌结构完整，不要为打一张单牌无意义拆三张、连对、顺子、钢板或炸弹
-- 仅当你明确选择过牌时，才返回 {"cards": [], "pass": true, "reason": "..."}
-- 若选择出牌，cards 必须是你当前手牌中的实际编码，并给出一句简短理由
-- 只输出严格 JSON，不要输出 markdown、解释或额外文本`
+- 只能返回 {"actionId":"...","reason":"..."}
+- actionId 必须与 legalActionLines 中某一项完全一致
+- reason 保持一句简短中文理由，不要超过 30 个字
+- 不要输出 markdown、解释、牌表或额外文本`
 }
 
 function parseOpeningGuideResponse(text: string): OpeningGuideResult | null {
@@ -759,6 +774,8 @@ function parseAIResponse(text: string): ParsedAIResponse {
   }
 
   try {
+    const actionIdCandidates = [parsed.actionId, parsed.optionId, parsed.choiceId]
+    const actionId = actionIdCandidates.find((value) => typeof value === 'string')
     const cards = Array.isArray(parsed.cards)
       ? parsed.cards.map(String)
       : typeof parsed.cards === 'string'
@@ -767,6 +784,18 @@ function parseAIResponse(text: string): ParsedAIResponse {
           ? splitCardCodes(parsed.card)
           : []
     const pass = parsed.pass === true || (typeof parsed.pass === 'string' && parsed.pass.trim().toLowerCase() === 'true')
+
+    if (typeof actionId === 'string' && actionId.trim()) {
+      return {
+        ok: true,
+        result: {
+          actionId: actionId.trim(),
+          cards,
+          pass,
+          reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+        },
+      }
+    }
 
     if (pass) {
       return {
@@ -804,7 +833,7 @@ async function callOpenRouter(
     const body: Record<string, unknown> = {
       model: config.model,
       messages,
-      temperature: 0.3,
+      temperature: requestOptions.temperature ?? 0.2,
       max_tokens: requestOptions.maxTokens ?? 512,
     }
 
@@ -819,6 +848,9 @@ async function callOpenRouter(
             },
           }
         : { type: 'json_object' }
+      body.provider = {
+        require_parameters: true,
+      }
     }
 
     if (requestOptions.enableResponseHealing && requestOptions.responseFormat) {
@@ -931,6 +963,7 @@ export async function requestOpeningGuide(
     responseFormat: buildOpeningGuideResponseFormat(),
     enableResponseHealing: true,
     maxTokens: 320,
+    temperature: 0.2,
   }, signal)
   const parsed = parseOpeningGuideResponse(response.text)
   if (!parsed) {
@@ -966,9 +999,10 @@ export class AIPlayerSession {
     currentPlay: PatternPlay | null,
     isLeading: boolean,
     remainingCounts: Record<Seat, number>,
+    legalActions: AILegalActionOption[] = [],
     signal?: AbortSignal,
   ): Promise<AIPlayResult> {
-    const userMessage = buildTurnPrompt(
+    const baseUserMessage = buildTurnPrompt(
       this.seat,
       hand,
       actions,
@@ -976,27 +1010,50 @@ export class AIPlayerSession {
       isLeading,
       this.levelRank,
       remainingCounts,
+      legalActions,
     )
-
-    const messages: AIMessage[] = [
-      { role: 'system', content: this.systemPrompt },
-      { role: 'user', content: userMessage },
-    ]
+    const modelCandidates = [this.config.model, STRUCTURED_OUTPUT_FALLBACK_MODEL].filter((model, index, list) => list.indexOf(model) === index)
+    let modelIndex = 0
 
     const MAX_RETRIES = 3
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const isLastAttempt = attempt === MAX_RETRIES
+      const activeConfig = modelIndex === 0 ? this.config : { ...this.config, model: modelCandidates[modelIndex] }
+      const retryHint = attempt === 0
+        ? null
+        : `上一次回复无效。禁止输出思考过程、分析步骤或额外说明，只能从 legalActionLines 中选择一个 actionId，并返回 {"actionId":"...","reason":"..."}。`
+      const messages: AIMessage[] = [
+        { role: 'system', content: this.systemPrompt },
+        { role: 'user', content: retryHint ? `${baseUserMessage}\n\n补充要求:\n${retryHint}` : baseUserMessage },
+      ]
+
       try {
-        const response = await callOpenRouter(this.config, messages, {
+        const response = await callOpenRouter(activeConfig, messages, {
           responseFormat: buildPlayResponseFormat(),
           enableResponseHealing: true,
-          maxTokens: 512,
+          maxTokens: 160,
+          temperature: 0.1,
         }, signal)
         const responseText = response.text
         const parsed = parseAIResponse(responseText)
 
         if (parsed.ok) {
           return parsed.result
+        }
+
+        const hintedActionId = extractActionIdHint(responseText, legalActions)
+        if (hintedActionId) {
+          return {
+            actionId: hintedActionId,
+            cards: [],
+            pass: false,
+            reason: compactText(responseText, 60) || `已从文本提取 ${hintedActionId}`,
+          }
+        }
+
+        if (modelIndex + 1 < modelCandidates.length) {
+          modelIndex += 1
+          continue
         }
 
         if (isLastAttempt) {
@@ -1012,15 +1069,14 @@ export class AIPlayerSession {
             responseText,
           )
         }
-
-        messages.push({ role: 'assistant', content: responseText.slice(0, 1200) })
-        messages.push({
-          role: 'user',
-          content: `你上一条回复无效，原因：${parsed.message}。请重新决策，并且只回复严格 JSON，不要添加其他文字。`,
-        })
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
           throw err
+        }
+
+        if (err instanceof AIRequestError && err.kind !== 'auth' && modelIndex + 1 < modelCandidates.length) {
+          modelIndex += 1
+          continue
         }
 
         const retryable = err instanceof AIRequestError ? err.retryable : true
@@ -1028,7 +1084,8 @@ export class AIPlayerSession {
           throw err
         }
 
-        await new Promise((r) => setTimeout(r, 800))
+        const retryDelay = err instanceof AIRequestError && err.kind === 'response-format' ? 150 : 400
+        await new Promise((r) => setTimeout(r, retryDelay))
       }
     }
 

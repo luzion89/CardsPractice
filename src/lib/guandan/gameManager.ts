@@ -25,8 +25,8 @@ import {
   partnerOf,
   SEATS,
 } from './engine'
-import { resolveCardsFromCodes } from './cardCode'
-import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult } from './aiService'
+import { cardToCode, resolveCardsFromCodes } from './cardCode'
+import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult, type AILegalActionOption } from './aiService'
 
 /* ------------------------------------------------------------------ */
 /*  Internal types                                                     */
@@ -194,6 +194,45 @@ function summarizeResponseFormatError(message: string) {
   return `AI连续返回不可解析内容：${summary}`
 }
 
+const LEAD_OPTION_TYPE_PRIORITY: Record<PatternPlay['type'], number> = {
+  single: 0,
+  pair: 1,
+  triple: 2,
+  fullHouse: 3,
+  straight: 4,
+  tube: 5,
+  plate: 6,
+  bomb: 7,
+  straightFlush: 8,
+  jokerBomb: 9,
+}
+
+function comparePatternsForAiOptions(left: PatternPlay, right: PatternPlay, currentPlay: PatternPlay | null) {
+  if (currentPlay) {
+    const leftTypePenalty = left.type === currentPlay.type ? 0 : 10000
+    const rightTypePenalty = right.type === currentPlay.type ? 0 : 10000
+
+    return leftTypePenalty - rightTypePenalty
+      || left.bombTier - right.bombTier
+      || left.cards.length - right.cards.length
+      || left.primaryValue - right.primaryValue
+      || left.wildCount - right.wildCount
+      || left.detail.localeCompare(right.detail, 'zh-CN')
+  }
+
+  return LEAD_OPTION_TYPE_PRIORITY[left.type] - LEAD_OPTION_TYPE_PRIORITY[right.type]
+    || left.bombTier - right.bombTier
+    || left.cards.length - right.cards.length
+    || left.primaryValue - right.primaryValue
+    || left.wildCount - right.wildCount
+    || left.detail.localeCompare(right.detail, 'zh-CN')
+}
+
+type ResolvedAILegalAction = {
+  option: AILegalActionOption
+  pattern: PatternPlay | null
+}
+
 /* ------------------------------------------------------------------ */
 /*  GameManager                                                        */
 /* ------------------------------------------------------------------ */
@@ -300,6 +339,40 @@ export class GameManager {
     return this.phase === 'finished'
   }
 
+  private buildAiLegalActions(hand: Card[], currentPlay: PatternPlay | null) {
+    const candidatePatterns = enumerateLeadPatterns(hand, this.levelRank)
+      .filter((pattern) => !currentPlay || canBeat(pattern, currentPlay))
+      .toSorted((left, right) => comparePatternsForAiOptions(left, right, currentPlay))
+
+    const resolved = new Map<string, ResolvedAILegalAction>()
+    const legalActions: AILegalActionOption[] = candidatePatterns.map((pattern, index) => {
+      const actionId = `A${String(index + 1).padStart(2, '0')}`
+      const option: AILegalActionOption = {
+        actionId,
+        action: 'play',
+        label: pattern.label,
+        detail: pattern.detail,
+        cards: pattern.cards.map(cardToCode),
+      }
+      resolved.set(actionId, { option, pattern })
+      return option
+    })
+
+    if (currentPlay) {
+      const passOption: AILegalActionOption = {
+        actionId: 'P00',
+        action: 'pass',
+        label: '过牌',
+        detail: '不压当前领先牌型',
+        cards: [],
+      }
+      resolved.set(passOption.actionId, { option: passOption, pattern: null })
+      legalActions.push(passOption)
+    }
+
+    return { legalActions, resolved }
+  }
+
   /**
    * Advance the game by one step: call the current player's AI,
    * validate the move, and apply it. Returns the new ReplayAction.
@@ -326,6 +399,7 @@ export class GameManager {
     const isLeading = !this.trickState
     const currentPlay = this.trickState?.lastWinningPlay ?? null
     const remaining = buildRemainingCounts(this.hands)
+    const { legalActions, resolved } = this.buildAiLegalActions(hand, currentPlay)
 
     // Call AI
     this.phase = 'thinking'
@@ -339,6 +413,7 @@ export class GameManager {
         currentPlay,
         isLeading,
         remaining,
+        legalActions,
         this.abortController.signal,
       )
     } catch (err) {
@@ -351,6 +426,22 @@ export class GameManager {
 
     this.lastAIReason = aiResult.reason
     this.phase = 'playing'
+
+    const normalizedActionId = aiResult.actionId?.trim()
+    if (normalizedActionId && resolved.has(normalizedActionId)) {
+      const selected = resolved.get(normalizedActionId)
+      if (selected?.pattern) {
+        this.lastAIReason = aiResult.reason || `AI选择 ${selected.option.label}`
+        return this.applyPlay(seat, selected.pattern)
+      }
+
+      this.lastAIReason = aiResult.reason || 'AI选择过牌'
+      return this.applyPass(seat)
+    }
+
+    if (normalizedActionId && aiResult.cards.length === 0 && !aiResult.pass) {
+      return this.applyFallbackDecision(seat, hand, currentPlay, `AI返回了未知 actionId ${normalizedActionId}`)
+    }
 
     // Process the AI's decision
     if (aiResult.pass || aiResult.cards.length === 0) {

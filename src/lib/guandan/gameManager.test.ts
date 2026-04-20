@@ -11,6 +11,30 @@ function buildConfig() {
 }
 
 describe('GameManager', () => {
+  it('applies a legal action selected by actionId', async () => {
+    const manager = new GameManager(buildConfig(), 7)
+    const state = manager.getState()
+    const currentSeat = state.currentSeat
+    expect(currentSeat).not.toBeNull()
+
+    const sessions = (manager as unknown as {
+      aiSessions: Record<string, { requestPlay: () => Promise<AIPlayResult> }>
+    }).aiSessions
+
+    sessions[currentSeat!].requestPlay = vi.fn().mockResolvedValue({
+      actionId: 'A01',
+      cards: [],
+      pass: false,
+      reason: '选择第一个合法动作',
+    })
+
+    const action = await manager.playNextMove()
+
+    expect(action.play).not.toBeNull()
+    expect(action.action).toBe('play')
+    expect(manager.getState().lastAIReason).toBe('选择第一个合法动作')
+  })
+
   it('falls back to a legal lead when AI incorrectly passes on lead', async () => {
     const manager = new GameManager(buildConfig(), 7)
     const state = manager.getState()

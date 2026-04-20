@@ -148,10 +148,13 @@
 - [ ] AI 返回非法出牌时，系统能本地回退，不会让牌局崩溃
 - [ ] AI 获取出牌信息失败时会在后台自动重试 3 次；重试仍失败时显示错误，不会直接被当作过牌
 - [ ] AI 出牌请求会优先使用 structured output + response-healing；若当前模型或路由不支持，会自动回退到普通文本解析链路
+- [ ] AI 当前优先从 legalActions 中返回 actionId，不再频繁出现“手牌不存在”或“牌型不合法”的协议层错误
+- [ ] 若主模型连续不按 structured output 返回，或上游 provider 限流/失败，会自动切到备用模型继续该手决策，而不是立即落回本地兜底
 - [ ] AI 返回内容前即使夹带前置空行、说明文字、外层字符串、function_call.arguments 或 code fence，系统仍能提取首个有效 JSON 对象
 - [ ] AI 若连续返回不可解析内容，系统会回退到本地最小合法决策，不会卡死在错误提示
 - [ ] 若 AI 出牌被本地兜底改写，本家显示的理由会同步变成兜底说明，不会和实际落地动作不一致
 - [ ] 调试模式下若发生格式兜底，可看到最近一次解析失败摘要，而不只是统一兜底文案
+- [ ] AI prompt 只携带最近两轮结构化历史，复杂局面下不会因为长推理而频繁出现 finish_reason=length
 - [ ] 牌桌中心“正在思考”文案与真实行动位一致，不会显示成当前压桌方或其他错误座位
 - [ ] 调试模式开启后，可看到四家最近一次可见 AI 理由；关闭后不污染默认训练界面
 - [ ] 入门难度开局会显示牌面引导，直接展示场外大小王、级牌、逢人配、A、K 的余量
@@ -195,7 +198,8 @@
 4. AI prompt 中包含 leader / seatId / team / relationToYou 等结构化轮次信息
 5. AI 请求失败时后台自动重试 3 次
 6. 入门难度 challenge 只会生成计数题
-7. AI 响应带前导空行、外层字符串、function_call.arguments 或非 chat text 字段时的 JSON 提取
+7. AI 响应带前导空行、外层字符串、function_call.arguments、reasoning 或非 chat text 字段时的 JSON 提取
+8. AI 从本地 legalActions 中选择 actionId 的协议稳定性
 
 后续建议继续补充：
 
