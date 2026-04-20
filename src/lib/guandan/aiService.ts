@@ -34,12 +34,42 @@ export interface AIConnectivityResult {
   message: string
 }
 
+type SeatRelation = 'self' | 'partner' | 'opponent'
+
+type ParsedAIResponse =
+  | { ok: true; result: AIPlayResult }
+  | { ok: false; message: string }
+
+class AIRequestError extends Error {
+  retryable: boolean
+
+  constructor(message: string, retryable: boolean) {
+    super(message)
+    this.name = 'AIRequestError'
+    this.retryable = retryable
+  }
+}
+
 /** Partner mapping */
 const PARTNER_SEAT: Record<Seat, Seat> = {
   south: 'north',
   north: 'south',
   east: 'west',
   west: 'east',
+}
+
+function getSeatRelation(viewer: Seat, actor: Seat): SeatRelation {
+  if (viewer === actor) return 'self'
+  if (PARTNER_SEAT[viewer] === actor) return 'partner'
+  return 'opponent'
+}
+
+function describeSeat(viewer: Seat, actor: Seat) {
+  return {
+    seat: actor,
+    label: SEAT_LABELS[actor],
+    relation: getSeatRelation(viewer, actor),
+  }
 }
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
@@ -62,95 +92,159 @@ function buildSystemPrompt(seat: Seat, levelRank: number): string {
 - SJ=小王, BJ=大王
 
 策略要点：
-- 优先出小牌和散牌，保留大牌和炸弹
-- 搭档快要打完时主动喂牌
-- 对手剩余牌少时果断用炸弹抢权
-- 保持手牌结构完整，避免拆散炸弹或连对
+- relation 字段含义：self=你，partner=搭档，opponent=对手；判断敌我时必须优先看 relation，不要把搭档当作对手去压
+- 领出时优先走独立散牌、边张或低位完整牌型，先试探再升级；若手里有完整顺子、连对、钢板或三同张，不要为了打一张单牌随意拆开
+- 结构保护优先级：天王炸/炸弹/同花顺 > 钢板/连对/顺子 > 三同张 > 对子 > 单张；除非抢关键牌权、喂搭档、或拆后能明显加快自己走完，否则不要拆高结构去凑低结构
+- 特别注意：小三同张、小连对、小顺子若还有别的合法单张/对子可出，优先不拆；不要把小三张拆成单牌去送节奏
+- 跟牌时能小压就小压，避免无谓抬高；若当前领先者是搭档且局面安全，通常不要压搭档，除非你是在送搭档、能顺势连续出牌、或必须阻止对手夺权
+- 对手剩 1 到 2 手、报单或明显即将走完时，优先保留或使用控制牌阻断对手，必要时果断用炸弹抢回牌权
+- 搭档接近走完时，优先送搭档易接的牌型，不要只顾自己最小化出牌而破坏队友节奏
+- 逢人配优先用于补强关键组合（顺子、连对、钢板、夯、炸弹边缘位），不要轻易当普通小单牌浪费
+- 只有在没有其他合法选择，或拆牌后能显著优化整体出完路线时，才允许拆三张、连对、顺子、钢板或炸弹
 
 请严格以JSON格式回复，不要添加任何其他文字或markdown标记。
 出牌: {"cards": ["1a", "1d"], "reason": "简短理由"}
 过牌: {"cards": [], "pass": true, "reason": "简短理由"}`
 }
 
-function formatPlayHistory(actions: ReplayAction[]): string {
-  if (actions.length === 0) return '暂无出牌历史。'
-
-  const lines: string[] = []
-  let currentTrickIdx = -1
+function buildStructuredHistory(viewer: Seat, actions: ReplayAction[]) {
+  const history = new Map<number, {
+    trickNumber: number
+    leader: ReturnType<typeof describeSeat>
+    winnerSoFar: ReturnType<typeof describeSeat> | null
+    actions: Array<{
+      order: number
+      seat: Seat
+      relation: SeatRelation
+      action: 'play' | 'pass'
+      cards: string[]
+      pattern: string
+      note: string
+      handCountAfter: number
+    }>
+  }>()
 
   for (const action of actions) {
-    if (action.trickIndex !== currentTrickIdx) {
-      currentTrickIdx = action.trickIndex
-      lines.push(`\n第${currentTrickIdx + 1}轮:`)
+    const existing = history.get(action.trickIndex)
+    const trick = existing ?? {
+      trickNumber: action.trickIndex + 1,
+      leader: describeSeat(viewer, action.seat),
+      winnerSoFar: action.winningSeat ? describeSeat(viewer, action.winningSeat) : null,
+      actions: [],
     }
 
-    if (action.play) {
-      const codes = action.play.cards.map(cardToCode).join(',')
-      const wildNote = action.play.wildCount > 0 ? ' (含逢人配)' : ''
-      lines.push(`  ${SEAT_LABELS[action.seat]}出 [${codes}] ${action.play.label}${wildNote}`)
-    } else {
-      lines.push(`  ${SEAT_LABELS[action.seat]}过牌`)
-    }
+    trick.winnerSoFar = action.winningSeat ? describeSeat(viewer, action.winningSeat) : trick.winnerSoFar
+    trick.actions.push({
+      order: trick.actions.length + 1,
+      seat: action.seat,
+      relation: getSeatRelation(viewer, action.seat),
+      action: action.action,
+      cards: action.play?.cards.map(cardToCode) ?? [],
+      pattern: action.play?.label ?? 'pass',
+      note: action.note,
+      handCountAfter: action.handCountAfter,
+    })
+
+    history.set(action.trickIndex, trick)
   }
 
-  return lines.join('\n')
+  return [...history.values()]
 }
 
 function buildTurnPrompt(
-  _seat: Seat,
+  seat: Seat,
   hand: Card[],
   actions: ReplayAction[],
   currentPlay: PatternPlay | null,
   isLeading: boolean,
-  _levelRank: number,
+  levelRank: number,
   remainingCounts: Record<Seat, number>,
 ): string {
-  const handCodes = hand.map(cardToCode).join(', ')
-  const history = formatPlayHistory(actions)
-
-  const remainingInfo = (['south', 'east', 'north', 'west'] as Seat[])
-    .map((s) => `${SEAT_LABELS[s]}:${remainingCounts[s]}张`)
-    .join('  ')
-
-  let turnInstruction: string
-  if (isLeading) {
-    turnInstruction = '轮到你领出，可以出任意牌型。'
-  } else if (currentPlay) {
-    const wildNote = currentPlay.wildCount > 0 ? '（含逢人配）' : ''
-    turnInstruction = `当前需要压过: ${currentPlay.detail}${wildNote}（${currentPlay.type}）\n压不过则过牌。`
-  } else {
-    turnInstruction = '轮到你出牌。'
+  const levelText = rankToText(levelRank)
+  const handCodes = hand.map(cardToCode)
+  const lastAction = actions[actions.length - 1] ?? null
+  const payload = {
+    perspective: {
+      you: describeSeat(seat, seat),
+      partner: describeSeat(seat, PARTNER_SEAT[seat]),
+      opponents: (['south', 'east', 'north', 'west'] as Seat[])
+        .filter((actor) => actor !== seat && actor !== PARTNER_SEAT[seat])
+        .map((actor) => describeSeat(seat, actor)),
+    },
+    level: {
+      rank: levelText,
+      wildCard: `红桃${levelText}`,
+    },
+    hand: {
+      count: hand.length,
+      cards: handCodes,
+    },
+    remainingCounts: (['south', 'east', 'north', 'west'] as Seat[]).map((actor) => ({
+      ...describeSeat(seat, actor),
+      remaining: remainingCounts[actor],
+    })),
+    currentTurn: {
+      isLeading,
+      instruction: isLeading ? '你是本轮领出方，可以主动选择牌型。' : '你是跟牌方，只能压过当前领先牌型，否则过牌。',
+      currentWinningSeat: lastAction?.winningSeat ? describeSeat(seat, lastAction.winningSeat) : null,
+      targetPlay: currentPlay
+        ? {
+            type: currentPlay.type,
+            label: currentPlay.label,
+            detail: currentPlay.detail,
+            cards: currentPlay.cards.map(cardToCode),
+            wildCount: currentPlay.wildCount,
+          }
+        : null,
+    },
+    trickHistory: buildStructuredHistory(seat, actions),
   }
 
-  return `你的手牌（${hand.length}张）: [${handCodes}]
+  return `请依据下面的结构化局面做出当前回合决策。队伍关系请优先查看 relation 字段。
 
-各家剩余: ${remainingInfo}
+局面数据(JSON):
+${JSON.stringify(payload, null, 2)}
 
-出牌记录:
-${history}
-
-${turnInstruction}
-
-请以JSON回复。`
+决策要求:
+- 优先保持手牌结构完整，不要为打一张单牌无意义拆三张、连对、顺子、钢板或炸弹
+- 仅当你明确选择过牌时，才返回 {"cards": [], "pass": true, "reason": "..."}
+- 若选择出牌，cards 必须是你当前手牌中的实际编码，并给出一句简短理由
+- 只输出严格 JSON，不要输出 markdown、解释或额外文本`
 }
 
-function parseAIResponse(text: string): AIPlayResult {
+function parseAIResponse(text: string): ParsedAIResponse {
   // Try to extract JSON from the response (might be wrapped in markdown)
   const jsonMatch = text.match(/\{[\s\S]*?\}/)
   if (!jsonMatch) {
-    return { cards: [], pass: true, reason: 'AI回复格式错误' }
+    return { ok: false, message: '未找到 JSON 对象' }
   }
 
   try {
     const parsed = JSON.parse(jsonMatch[0])
     const cards = Array.isArray(parsed.cards) ? parsed.cards.map(String) : []
+    if (parsed.pass === true) {
+      return {
+        ok: true,
+        result: {
+          cards: [],
+          pass: true,
+          reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+        },
+      }
+    }
+    if (cards.length === 0) {
+      return { ok: false, message: 'cards 为空且未明确声明 pass=true' }
+    }
     return {
-      cards,
-      pass: parsed.pass === true || cards.length === 0,
-      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      ok: true,
+      result: {
+        cards,
+        pass: false,
+        reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      },
     }
   } catch {
-    return { cards: [], pass: true, reason: 'AI回复解析失败' }
+    return { ok: false, message: 'JSON 解析失败' }
   }
 }
 
@@ -178,9 +272,9 @@ async function callOpenRouter(
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => '')
-    if (response.status === 401) throw new Error('API密钥无效，请检查设置。')
-    if (response.status === 429) throw new Error('请求过于频繁，请稍后再试。')
-    throw new Error(`AI请求失败 (${response.status}): ${errBody.slice(0, 120)}`)
+    if (response.status === 401) throw new AIRequestError('API密钥无效，请检查设置。', false)
+    if (response.status === 429) throw new AIRequestError('请求过于频繁，请稍后再试。', false)
+    throw new AIRequestError(`AI请求失败 (${response.status}): ${errBody.slice(0, 120)}`, true)
   }
 
   const data = await response.json()
@@ -278,35 +372,40 @@ export class AIPlayerSession {
       { role: 'user', content: userMessage },
     ]
 
-    const MAX_RETRIES = 2
+    const MAX_RETRIES = 3
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const isLastAttempt = attempt === MAX_RETRIES
       try {
         const responseText = await callOpenRouter(this.config, messages, signal)
-        const result = parseAIResponse(responseText)
+        const parsed = parseAIResponse(responseText)
 
-        // If AI returned cards, it's a real play attempt
-        if (result.cards.length > 0 || result.pass) {
-          return result
+        if (parsed.ok) {
+          return parsed.result
         }
 
-        // Empty cards without explicit pass — treat as pass on last attempt
-        if (attempt === MAX_RETRIES) {
-          return { cards: [], pass: true, reason: 'AI未返回有效出牌' }
+        if (isLastAttempt) {
+          throw new AIRequestError(`已自动重试3次，AI仍未返回有效出牌信息：${parsed.message}`, false)
         }
 
-        // Retry with clarification
         messages.push({ role: 'assistant', content: responseText })
         messages.push({
           role: 'user',
-          content: '请直接回复JSON格式的出牌决定，不要添加其他文字。',
+          content: `你上一条回复无效，原因：${parsed.message}。请重新决策，并且只回复严格 JSON，不要添加其他文字。`,
         })
       } catch (err) {
-        if (attempt === MAX_RETRIES) throw err
-        // Brief delay before retry
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw err
+        }
+
+        const retryable = err instanceof AIRequestError ? err.retryable : true
+        if (!retryable || isLastAttempt) {
+          throw err
+        }
+
         await new Promise((r) => setTimeout(r, 800))
       }
     }
 
-    return { cards: [], pass: true, reason: '请求失败' }
+    throw new Error('已自动重试3次，仍未取得有效出牌信息。')
   }
 }

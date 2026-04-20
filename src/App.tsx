@@ -228,7 +228,7 @@ function App() {
   const [modal, setModal] = useState<ModalKind>('none')
   const [error, setError] = useState<string | null>(null)
   const [aiThinking, setAiThinking] = useState(false)
-  const [lastAIReason, setLastAIReason] = useState('')
+  const [aiReasons, setAiReasons] = useState<Record<number, string>>({})
   const [thinkingSeat, setThinkingSeat] = useState<Seat | null>(null)
   const [aiPhase, setAiPhase] = useState<GamePhase>('waiting')
 
@@ -344,7 +344,7 @@ function App() {
     setError(null)
     setActiveChallenge(null)
     setChallengedTrickIndexes([])
-    setLastAIReason('')
+    setAiReasons({})
     setAiThinking(false)
     setThinkingSeat(null)
     setAiPhase(resolvedMode === 'ai' ? 'playing' : 'waiting')
@@ -422,10 +422,17 @@ function App() {
         await mgr.playNextMove()
         const state = mgr.getState()
         setAiPhase(state.phase)
-        setLastAIReason(state.lastAIReason)
 
         const newGame = state.game
         const newStep = newGame.actions.length
+        const latestAction = newGame.actions[newStep - 1] ?? null
+
+        if (latestAction && state.lastAIReason) {
+          setAiReasons((prev) => ({
+            ...prev,
+            [latestAction.index]: state.lastAIReason,
+          }))
+        }
 
         // Check for challenge
         const planned = getChallengeForAdvance(
@@ -504,7 +511,7 @@ function App() {
   function handleContinueAfterChallenge() {
     if (!activeChallenge || activeChallenge.selectedIndex === null) return
     setActiveChallenge(null)
-    if (game && stepIndex >= game.actions.length) {
+    if (game && (gameMode === 'ai' ? aiPhase === 'finished' && stepIndex >= game.actions.length : stepIndex >= game.actions.length)) {
       setModal('result')
     }
   }
@@ -543,20 +550,22 @@ function App() {
         .filter(([, c]) => c === 0)
         .map(([s]) => s)
     : []
+  const ownVisiblePlayReason =
+    gameMode === 'ai' && snapshot?.lastAction?.seat === SELF_SEAT && snapshot.lastAction.play
+      ? aiReasons[snapshot.lastAction.index] ?? ''
+      : ''
 
   const tableNote = aiThinking
     ? `${pressureSeat ? SEAT_LABELS[pressureSeat] : 'AI'} 正在思考...`
-    : lastAIReason
-      ? `AI: ${lastAIReason}`
-      : isGameOver && game
-        ? '本局已结束，可查看战报或开始新牌局。'
-        : !game
-          ? '点击"新牌局"开始游戏。'
-          : snapshot?.lastAction
-            ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
-            : gameMode === 'ai'
-              ? '牌局已开始，点击"下一步"让AI出牌。'
-              : '整局牌谱已预生成，按"下一步"开始回放。'
+    : isGameOver && game
+      ? '本局已结束，可查看战报或开始新牌局。'
+      : !game
+        ? '点击"新牌局"开始游戏。'
+        : snapshot?.lastAction
+          ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
+          : gameMode === 'ai'
+            ? '牌局已开始，点击"下一步"让AI出牌。'
+            : '整局牌谱已预生成，按"下一步"开始回放。'
 
   /* ---- Landing screen (no game) ---- */
   if (!game) {
@@ -654,7 +663,6 @@ function App() {
             <strong className="app-title">掼蛋记牌台</strong>
             <div className="info-tags">
               <span className="tag">{roundLabel}</span>
-              <span className="tag level-tag">级牌 {rankToText(game.levelRank)}</span>
               <span className="tag diff-tag">{DIFFICULTY_META[difficulty].label}</span>
               {gameMode === 'ai' && <span className="tag ai-tag">AI</span>}
               {typeof progress === 'number' && progress > 0 && <span className="tag">{progress}%</span>}
@@ -679,6 +687,12 @@ function App() {
       {/* Table */}
       <section className="table-scene">
         <div className="table-felt">
+          <div className="table-level-panel">
+            <span className="table-level-kicker">当前级牌</span>
+            <strong className="table-level-rank">{rankToText(game.levelRank)}</strong>
+            <span className="table-level-wild">红桃{rankToText(game.levelRank)} 为逢人配</span>
+          </div>
+
           {/* Seat badges */}
           {TABLE_SEATS.map((seat) => (
             <SeatBadge
@@ -714,7 +728,10 @@ function App() {
       {/* Hand panel */}
       <section className="hand-panel">
         <div className="hand-head">
-          <h3>手牌</h3>
+          <div className="hand-title-group">
+            <h3>手牌</h3>
+            {ownVisiblePlayReason && <p className="hand-ai-reason">本家 AI 理由：{ownVisiblePlayReason}</p>}
+          </div>
           <span className="hand-count">{ownHand.length} / {game.players[SELF_SEAT].length}</span>
         </div>
         {ownHand.length > 0 ? (

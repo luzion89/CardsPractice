@@ -33,6 +33,7 @@ describe('GameManager', () => {
     expect(action.action).toBe('play')
     expect(action.handCountAfter).toBe(26)
     expect(manager.getState().game.actions).toHaveLength(1)
+    expect(manager.getState().lastAIReason).toBe('AI未给出合法领出，已改用本地最小合法牌')
   })
 
   it('falls back to a legal lead when AI returns invalid card codes', async () => {
@@ -56,5 +57,6 @@ describe('GameManager', () => {
     expect(action.play).not.toBeNull()
     expect(action.action).toBe('play')
     expect(manager.getState().phase).toBe('playing')
+    expect(manager.getState().lastAIReason).toBe('AI返回的牌面无法匹配当前手牌，已改用本地最小合法牌')
   })
 })

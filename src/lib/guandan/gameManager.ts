@@ -339,8 +339,10 @@ export class GameManager {
     if (aiResult.pass || aiResult.cards.length === 0) {
       if (isLeading) {
         // Leading player MUST play — fallback to smallest single
+        this.lastAIReason = 'AI未给出合法领出，已改用本地最小合法牌'
         return this.applyFallbackLead(seat, hand)
       }
+      this.lastAIReason = aiResult.reason || 'AI选择过牌'
       return this.applyPass(seat)
     }
 
@@ -348,7 +350,11 @@ export class GameManager {
     const resolvedCards = resolveCardsFromCodes(aiResult.cards, hand)
     if (!resolvedCards) {
       // Invalid cards — fallback
-      if (isLeading) return this.applyFallbackLead(seat, hand)
+      if (isLeading) {
+        this.lastAIReason = 'AI返回的牌面无法匹配当前手牌，已改用本地最小合法牌'
+        return this.applyFallbackLead(seat, hand)
+      }
+      this.lastAIReason = 'AI返回的牌面无法匹配当前手牌，本手按规则过牌'
       return this.applyPass(seat)
     }
 
@@ -356,7 +362,11 @@ export class GameManager {
     const pattern = findPatternForCards(resolvedCards, hand, this.levelRank, currentPlay)
     if (!pattern) {
       // Not a legal play — fallback
-      if (isLeading) return this.applyFallbackLead(seat, hand)
+      if (isLeading) {
+        this.lastAIReason = 'AI给出的牌型不合法，已改用本地最小合法牌'
+        return this.applyFallbackLead(seat, hand)
+      }
+      this.lastAIReason = 'AI给出的牌型不合法，本手按规则过牌'
       return this.applyPass(seat)
     }
 
