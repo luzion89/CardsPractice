@@ -5,7 +5,7 @@ import type { Card, PatternPlay, ReplayAction, Seat } from './types'
 function buildConfig() {
   return {
     apiKey: 'test-key',
-    model: 'google/gemini-2.0-flash-001',
+    model: 'minimax/minimax-m2.7',
     baseUrl: 'https://openrouter.ai/api/v1',
   }
 }
@@ -124,16 +124,49 @@ describe('AIPlayerSession', () => {
     expect(result.cards).toEqual(['3a'])
   })
 
+  it('extracts the first valid JSON object even with leading blank lines and content parts', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '\n\n\n先看局面，再出牌。\n```json\n{"cards":["3a"],"reason":"保留结构先出最小单张"}\n```',
+            },
+          ],
+        },
+      }],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const card3 = makeCard('3a-1', 3, 'spades')
+    const session = new AIPlayerSession(buildConfig(), 'south', 7)
+    const result = await session.requestPlay(
+      [card3],
+      [],
+      null,
+      true,
+      { south: 1, east: 3, north: 2, west: 4 },
+    )
+
+    expect(result.pass).toBe(false)
+    expect(result.cards).toEqual(['3a'])
+    expect(result.reason).toBe('保留结构先出最小单张')
+  })
+
   it('parses starter opening guide responses', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      choices: [{ message: { content: '{"headline":"先看王和级牌","bullets":["大王小王要先记住。","A 和 K 的总量要随出牌递减。","缺少的 10 以上牌面要优先盯。"]}' } }],
+      choices: [{ message: { content: '\n\n{"headline":"牌面引导","items":[{"label":"大王","outsideCount":2},{"label":"级牌 9","outsideCount":5}]}' } }],
     }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
     const guide = await requestOpeningGuide(buildConfig(), [makeCard('HA-1', 14, 'hearts')], 9)
 
-    expect(guide.headline).toBe('先看王和级牌')
-    expect(guide.bullets).toHaveLength(3)
+    expect(guide.headline).toBe('牌面引导')
+    expect(guide.items).toEqual([
+      { label: '大王', outsideCount: 2 },
+      { label: '级牌 9', outsideCount: 5 },
+    ])
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -30,6 +30,9 @@
 - 后续新增需求、交互改动、AI 逻辑修订时，必须同步更新 `docs/post-update-checklist.md`。
 - 每次实际代码改动后，必须先执行 `npm run check:update`，再按 `docs/post-update-checklist.md` 完成人工检查。
 - 若检查中发现问题，必须修复后重新执行完整检查流程。
+- 每次对话收尾时，如本轮产生了仓库文件改动，必须先完整走完 `npm run check:update` 与 `docs/post-update-checklist.md`，确认通过后再提交并 push 到 `main`，让 GitHub Actions 自动部署。
+- 若本轮没有任何文件改动，则无需 push，但仍需明确说明本轮无变更可同步。
+- 若 push 失败，必须继续排查认证或网络问题；只有在确认无法继续自动处理时，才向用户说明阻塞原因。
 
 - 当前构建命令：`npm run build`
 - 当前更新校验命令：`npm run check:update`

@@ -10,7 +10,7 @@ import {
   TEAM_LABELS,
 } from './lib/guandan/engine'
 import { GameManager, type GamePhase } from './lib/guandan/gameManager'
-import { DEFAULT_AI_CONFIG, requestOpeningGuide, testOpenRouterConnection } from './lib/guandan/aiService'
+import { buildOpeningGuideItems, DEFAULT_AI_CONFIG, type OpeningGuideItem, testOpenRouterConnection } from './lib/guandan/aiService'
 import type {
   AIConfig,
   Card,
@@ -52,10 +52,7 @@ type PersistedState = {
 }
 
 type OpeningGuideState = {
-  headline: string
-  bullets: string[]
-  source: 'ai' | 'local'
-  status: 'loading' | 'ready'
+  items: OpeningGuideItem[]
 }
 
 type ModalKind = 'none' | 'settings' | 'info' | 'result'
@@ -67,6 +64,7 @@ type TablePosition = 'top' | 'bottom' | 'left' | 'right'
 
 const STORAGE_KEY = 'guandan-memory-lab-v2'
 const SELF_SEAT: Seat = 'south'
+const LEGACY_DEFAULT_MODELS = new Set(['google/gemini-2.0-flash-001'])
 const POSITION_BY_SEAT: Record<Seat, TablePosition> = {
   north: 'top',
   west: 'left',
@@ -93,6 +91,14 @@ function persistSettings(state: PersistedState) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }
 
+function normalizeStoredModel(model: string | null | undefined) {
+  const trimmed = model?.trim() ?? ''
+  if (!trimmed || LEGACY_DEFAULT_MODELS.has(trimmed)) {
+    return DEFAULT_AI_CONFIG.model
+  }
+  return trimmed
+}
+
 function makeFreshStats(): TrainingStats {
   return { attempted: 0, correct: 0, streak: 0, bestStreak: 0 }
 }
@@ -111,32 +117,9 @@ function challengeTagLabel(tag: string) {
   }
 }
 
-function countCardsByRank(cards: Card[], rank: number) {
-  return cards.filter((card) => card.rank === rank).length
-}
-
 function buildLocalOpeningGuide(cards: Card[], levelRank: number): OpeningGuideState {
-  const bigJoker = countCardsByRank(cards, 17)
-  const smallJoker = countCardsByRank(cards, 16)
-  const levelCards = countCardsByRank(cards, levelRank)
-  const wildCards = cards.filter((card) => card.rank === levelRank && card.suit === 'hearts').length
-  const aces = countCardsByRank(cards, 14)
-  const kings = countCardsByRank(cards, 13)
-  const missingHighFaces = [10, 11, 12, 13, 14]
-    .filter((rank) => countCardsByRank(cards, rank) === 0)
-    .map((rank) => rankToText(rank))
-
   return {
-    headline: '开局先盯高张数量，再盯 10 以上缺门',
-    bullets: [
-      `先记大牌总量：大王 ${bigJoker}、小王 ${smallJoker}、级牌 ${levelCards}（逢人配 ${wildCards}）、A ${aces}、K ${kings}。`,
-      missingHighFaces.length > 0
-        ? `你手里缺少 ${missingHighFaces.join('、')}，这些 10 以上高张一旦外面出现，要优先记减。`
-        : '你手里 10 到 A 都有覆盖，接下来重点盯外面先打掉了哪些高张。',
-      '入门局先专注“王、级牌、A、K”和 10 以上缺门，不要被低张数量分散注意力。',
-    ],
-    source: 'local',
-    status: 'ready',
+    items: buildOpeningGuideItems(cards, levelRank),
   }
 }
 
@@ -273,9 +256,15 @@ function App() {
   const [openingGuide, setOpeningGuide] = useState<OpeningGuideState | null>(null)
 
   /* ---- AI config ---- */
-  const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => persisted?.aiConfig ?? null)
+  const [aiConfig, setAiConfig] = useState<AIConfig | null>(() => {
+    if (!persisted?.aiConfig) return null
+    return {
+      ...persisted.aiConfig,
+      model: normalizeStoredModel(persisted.aiConfig.model),
+    }
+  })
   const [apiKeyInput, setApiKeyInput] = useState(() => persisted?.aiConfig?.apiKey ?? '')
-  const [modelInput, setModelInput] = useState(() => persisted?.aiConfig?.model ?? DEFAULT_AI_CONFIG.model)
+  const [modelInput, setModelInput] = useState(() => normalizeStoredModel(persisted?.aiConfig?.model))
   const [aiConnectionStatus, setAiConnectionStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
   const [aiConnectionMessage, setAiConnectionMessage] = useState('')
 
@@ -285,8 +274,6 @@ function App() {
   /* ---- Refs ---- */
   const managerRef = useRef<GameManager | null>(null)
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const openingGuideAbortRef = useRef<AbortController | null>(null)
-  const openingGuideRequestIdRef = useRef(0)
 
   /* ---- Derived ---- */
   const snapshot = useMemo(
@@ -335,37 +322,8 @@ function App() {
     debouncedPersist({ difficulty, stats, aiConfig, debugMode })
   }, [debouncedPersist, difficulty, stats, aiConfig, debugMode])
 
-  useEffect(() => () => {
-    openingGuideAbortRef.current?.abort()
-  }, [])
-
-  const prepareOpeningGuide = useCallback(async (initialHand: Card[], levelRank: number, config: AIConfig | null) => {
-    openingGuideAbortRef.current?.abort()
-    openingGuideRequestIdRef.current += 1
-    const requestId = openingGuideRequestIdRef.current
-    const localGuide = buildLocalOpeningGuide(initialHand, levelRank)
-
-    if (!config?.apiKey) {
-      setOpeningGuide(localGuide)
-      return
-    }
-
-    const controller = new AbortController()
-    openingGuideAbortRef.current = controller
-    setOpeningGuide({ ...localGuide, status: 'loading' })
-
-    try {
-      const aiGuide = await requestOpeningGuide(config, initialHand, levelRank, controller.signal)
-      if (openingGuideRequestIdRef.current !== requestId || controller.signal.aborted) return
-      setOpeningGuide({ ...aiGuide, source: 'ai', status: 'ready' })
-    } catch {
-      if (openingGuideRequestIdRef.current !== requestId || controller.signal.aborted) return
-      setOpeningGuide(localGuide)
-    } finally {
-      if (openingGuideAbortRef.current === controller) {
-        openingGuideAbortRef.current = null
-      }
-    }
+  const prepareOpeningGuide = useCallback((initialHand: Card[], levelRank: number) => {
+    setOpeningGuide(buildLocalOpeningGuide(initialHand, levelRank))
   }, [])
 
   const handleDifficultyChange = useCallback((nextDifficulty: Difficulty) => {
@@ -373,21 +331,18 @@ function App() {
 
     if (!game || stepIndex !== 0) {
       if (nextDifficulty !== 'starter') {
-        openingGuideAbortRef.current?.abort()
         setOpeningGuide(null)
       }
       return
     }
 
     if (nextDifficulty !== 'starter') {
-      openingGuideAbortRef.current?.abort()
       setOpeningGuide(null)
       return
     }
 
-    const config = gameMode === 'ai' ? aiConfig : null
-    void prepareOpeningGuide(game.players[SELF_SEAT], game.levelRank, config)
-  }, [aiConfig, game, gameMode, prepareOpeningGuide, stepIndex])
+    prepareOpeningGuide(game.players[SELF_SEAT], game.levelRank)
+  }, [game, prepareOpeningGuide, stepIndex])
 
   const markConnectionAsDirty = useCallback(() => {
     setAiConnectionStatus('idle')
@@ -462,7 +417,7 @@ function App() {
       setStepIndex(0)
       setModal('none')
       if (difficulty === 'starter') {
-        void prepareOpeningGuide(state.game.players[SELF_SEAT], state.game.levelRank, resolvedConfig)
+        prepareOpeningGuide(state.game.players[SELF_SEAT], state.game.levelRank)
       }
     } else {
       // Local fallback mode
@@ -472,7 +427,7 @@ function App() {
       setStepIndex(0)
       setModal('none')
       if (difficulty === 'starter') {
-        void prepareOpeningGuide(g.players[SELF_SEAT], g.levelRank, null)
+        prepareOpeningGuide(g.players[SELF_SEAT], g.levelRank)
       }
 
       if (resolvedMode === 'ai') {
@@ -840,17 +795,17 @@ function App() {
         <section className="opening-guide-panel">
           <div className="opening-guide-head">
             <div>
-              <strong>开局牌面引导</strong>
-              <p>
-                {openingGuide.headline}
-                {openingGuide.status === 'loading' ? ' · AI 增强中' : openingGuide.source === 'ai' ? ' · AI 分析' : ' · 本地摘要'}
-              </p>
+              <strong>牌面引导</strong>
+              <p>以下数量均为场外余量，不含自己手牌。</p>
             </div>
-            <span className="opening-guide-badge">入门专注</span>
+            <span className="opening-guide-badge">场外余量</span>
           </div>
           <div className="opening-guide-list">
-            {openingGuide.bullets.map((bullet, index) => (
-              <p key={`${bullet}-${index}`}>{bullet}</p>
+            {openingGuide.items.map((item) => (
+              <article key={item.label} className="opening-guide-item">
+                <span className="opening-guide-label">{item.label}</span>
+                <strong className="opening-guide-value">{item.outsideCount} 张</strong>
+              </article>
             ))}
           </div>
         </section>

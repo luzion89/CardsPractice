@@ -5,7 +5,7 @@
 
 import type { Card, PatternPlay, ReplayAction, Seat } from './types'
 import { cardToCode } from './cardCode'
-import { rankToText, SEAT_LABELS } from './engine'
+import { rankToText, SEAT_LABELS, totalFaceCount } from './engine'
 
 export interface AIConfig {
   apiKey: string
@@ -14,7 +14,7 @@ export interface AIConfig {
 }
 
 export const DEFAULT_AI_CONFIG: Omit<AIConfig, 'apiKey'> = {
-  model: 'google/gemini-2.0-flash-001',
+  model: 'minimax/minimax-m2.7',
   baseUrl: 'https://openrouter.ai/api/v1',
 }
 
@@ -34,9 +34,14 @@ export interface AIConnectivityResult {
   message: string
 }
 
+export interface OpeningGuideItem {
+  label: string
+  outsideCount: number
+}
+
 export interface OpeningGuideResult {
   headline: string
-  bullets: string[]
+  items: OpeningGuideItem[]
 }
 
 type SeatRelation = 'self' | 'partner' | 'opponent'
@@ -98,34 +103,126 @@ function countRank(hand: Card[], rank: number) {
   return hand.filter((card) => card.rank === rank).length
 }
 
-function buildOpeningGuidePayload(hand: Card[], levelRank: number) {
-  const countsByRank = new Map<number, number>()
-  for (const card of hand) {
-    countsByRank.set(card.rank, (countsByRank.get(card.rank) ?? 0) + 1)
+export function buildOpeningGuideItems(hand: Card[], levelRank: number): OpeningGuideItem[] {
+  const items: OpeningGuideItem[] = [
+    {
+      label: '大王',
+      outsideCount: Math.max(0, totalFaceCount(17) - countRank(hand, 17)),
+    },
+    {
+      label: '小王',
+      outsideCount: Math.max(0, totalFaceCount(16) - countRank(hand, 16)),
+    },
+    {
+      label: `级牌 ${rankToText(levelRank)}`,
+      outsideCount: Math.max(0, totalFaceCount(levelRank) - countRank(hand, levelRank)),
+    },
+    {
+      label: `逢人配 红桃${rankToText(levelRank)}`,
+      outsideCount: Math.max(0, 2 - hand.filter((card) => card.rank === levelRank && card.suit === 'hearts').length),
+    },
+  ]
+
+  if (levelRank !== 14) {
+    items.push({
+      label: 'A',
+      outsideCount: Math.max(0, totalFaceCount(14) - countRank(hand, 14)),
+    })
   }
 
-  const missingHighFaces = [10, 11, 12, 13, 14]
-    .filter((rank) => (countsByRank.get(rank) ?? 0) === 0)
-    .map((rank) => rankToText(rank))
+  if (levelRank !== 13) {
+    items.push({
+      label: 'K',
+      outsideCount: Math.max(0, totalFaceCount(13) - countRank(hand, 13)),
+    })
+  }
 
+  return items
+}
+
+function buildOpeningGuidePayload(hand: Card[], levelRank: number) {
   return {
     levelRank: rankToText(levelRank),
     handCount: hand.length,
     handCards: hand.map(cardToCode),
-    focusCounts: {
-      bigJoker: countRank(hand, 17),
-      smallJoker: countRank(hand, 16),
-      levelCards: countRank(hand, levelRank),
-      wildCards: hand.filter((card) => card.rank === levelRank && card.suit === 'hearts').length,
-      aces: countRank(hand, 14),
-      kings: countRank(hand, 13),
-    },
-    highFacePresence: [10, 11, 12, 13, 14].map((rank) => ({
-      face: rankToText(rank),
-      countInHand: countsByRank.get(rank) ?? 0,
-    })),
-    missingHighFaces,
+    outsideFocusCounts: buildOpeningGuideItems(hand, levelRank),
   }
+}
+
+function normalizeResponseContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (Array.isArray(content)) {
+    return content.map((part) => normalizeResponseContent(part)).join('')
+  }
+
+  if (content && typeof content === 'object') {
+    const maybeText = content as { text?: unknown; content?: unknown }
+    if (typeof maybeText.text === 'string') {
+      return maybeText.text
+    }
+    if (maybeText.content !== undefined) {
+      return normalizeResponseContent(maybeText.content)
+    }
+  }
+
+  return ''
+}
+
+function extractFirstJsonObject(text: string) {
+  const source = text.replace(/^\uFEFF/, '')
+  let start = -1
+  let depth = 0
+  let inString = false
+  let isEscaped = false
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]
+
+    if (start === -1) {
+      if (char === '{') {
+        start = index
+        depth = 1
+      }
+      continue
+    }
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false
+        continue
+      }
+      if (char === '\\') {
+        isEscaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+
+    if (char === '{') {
+      depth += 1
+      continue
+    }
+
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return source.slice(start, index + 1)
+      }
+    }
+  }
+
+  return null
 }
 
 function buildSystemPrompt(seat: Seat, levelRank: number): string {
@@ -292,38 +389,49 @@ ${JSON.stringify(payload, null, 2)}
 }
 
 function parseOpeningGuideResponse(text: string): OpeningGuideResult | null {
-  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  const jsonMatch = extractFirstJsonObject(text)
   if (!jsonMatch) return null
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as {
+    const parsed = JSON.parse(jsonMatch) as {
       headline?: unknown
-      bullets?: unknown
+      items?: unknown
     }
     const headline = typeof parsed.headline === 'string' ? parsed.headline.trim() : ''
-    const bullets = Array.isArray(parsed.bullets)
-      ? parsed.bullets.map((item) => String(item).trim()).filter(Boolean).slice(0, 5)
+    const items = Array.isArray(parsed.items)
+      ? parsed.items
+          .map((item) => {
+            if (!item || typeof item !== 'object') return null
+            const candidate = item as { label?: unknown; outsideCount?: unknown }
+            const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
+            const outsideCount = typeof candidate.outsideCount === 'number'
+              ? candidate.outsideCount
+              : Number(candidate.outsideCount)
+            if (!label || Number.isNaN(outsideCount)) return null
+            return { label, outsideCount }
+          })
+          .filter((item): item is OpeningGuideItem => item !== null)
+          .slice(0, 6)
       : []
 
-    if (!headline || bullets.length === 0) {
+    if (!headline || items.length === 0) {
       return null
     }
 
-    return { headline, bullets }
+    return { headline, items }
   } catch {
     return null
   }
 }
 
 function parseAIResponse(text: string): ParsedAIResponse {
-  // Try to extract JSON from the response (might be wrapped in markdown)
-  const jsonMatch = text.match(/\{[\s\S]*?\}/)
+  const jsonMatch = extractFirstJsonObject(text)
   if (!jsonMatch) {
-    return { ok: false, message: '未找到 JSON 对象' }
+    return { ok: false, message: '未找到有效 JSON 对象' }
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0])
+    const parsed = JSON.parse(jsonMatch)
     const cards = Array.isArray(parsed.cards) ? parsed.cards.map(String) : []
     if (parsed.pass === true) {
       return {
@@ -381,7 +489,7 @@ async function callOpenRouter(
   }
 
   const data = await response.json()
-  return data.choices?.[0]?.message?.content ?? ''
+  return normalizeResponseContent(data.choices?.[0]?.message?.content)
 }
 
 export async function testOpenRouterConnection(
@@ -441,11 +549,11 @@ export async function requestOpeningGuide(
   const messages: AIMessage[] = [
     {
       role: 'system',
-      content: '你是掼蛋记牌训练助手，不是出牌代理。你的任务是为入门用户生成开局记牌引导。只允许关注：大小王、级牌、逢人配、A、K 的数量，以及 10/J/Q/K/A 中自己手里完全缺失的牌面。不要分析低张，不要建议具体出牌，不要扩展到炸弹博弈。严格返回 JSON：{"headline":"一句总提示","bullets":["要点1","要点2","要点3"]}。',
+      content: '你是掼蛋记牌训练助手，不是出牌代理。你的任务是把关键牌场外余量转写成极简牌面引导。只允许复述 outsideFocusCounts 中已经给出的 label 和 outsideCount，不要分析原因，不要补充策略，不要输出 markdown。严格返回 JSON：{"headline":"牌面引导","items":[{"label":"大王","outsideCount":2}]}。',
     },
     {
       role: 'user',
-      content: `请根据这份开局牌面数据，为入门难度用户生成 3 到 5 条“开局应该盯什么”的提醒。\n\n${JSON.stringify(payload, null, 2)}`,
+      content: `请根据这份开局牌面数据，直接列出 outsideFocusCounts 中每种关键牌在场外还剩多少张。\n\n${JSON.stringify(payload, null, 2)}`,
     },
   ]
 

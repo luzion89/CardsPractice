@@ -561,17 +561,30 @@
 
 .opening-guide-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 10px;
 }
 
-.opening-guide-list p {
-  margin: 0;
+.opening-guide-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.06);
   border: 2px solid rgba(255, 255, 255, 0.08);
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--ink);
+}
+
+.opening-guide-label {
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.opening-guide-value {
+  color: #ffe7a8;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.04em;
 }
 
 /* ================================================================== */
