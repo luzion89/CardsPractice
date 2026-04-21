@@ -14,6 +14,7 @@ import type {
   TrickRecord,
   VisibleTrick,
 } from './types'
+import { buildStrategyContext, type StrategyContext } from './strategyCore'
 
 interface HandAnalysis {
   allByRank: Map<number, Card[]>
@@ -1017,50 +1018,76 @@ function buildRemainingCounts(hands: Record<Seat, Card[]>) {
   }
 }
 
-function estimateHandCount(hand: Card[], levelRank: number) {
-  // Greedy estimate: how many moves to empty the hand
-  // This counts natural groupings (pairs, triples, straights etc.)
-  const analysis = analyzeHand(hand, levelRank)
-  let remaining = hand.length
-  let moves = 0
+export function estimateHandCount(hand: Card[], levelRank: number) {
+  const groups = arrangeHandGroups(hand, levelRank)
+  let fixedMoves = 0
+  let triples = 0
+  let pairs = 0
+  let singles = 0
+  let wilds = 0
 
-  // Count bombs (4+ of same rank) — these are efficient
-  for (const [, cards] of analysis.naturalByRank) {
-    if (cards.length >= 4) {
-      remaining -= cards.length
-      moves += 1
+  for (const group of groups) {
+    if (group.kind === 'bomb' || group.kind === 'straight' || group.kind === 'tube' || group.kind === 'plate' || group.kind === 'jokerBomb') {
+      fixedMoves += 1
+      continue
+    }
+
+    if (group.kind === 'triple') {
+      triples += 1
+      continue
+    }
+
+    if (group.kind === 'pair') {
+      pairs += 1
+      continue
+    }
+
+    if (group.kind === 'single') {
+      singles += 1
+      continue
+    }
+
+    if (group.kind === 'joker') {
+      const blackCount = group.cards.filter((card) => card.rank === 16).length
+      const redCount = group.cards.filter((card) => card.rank === 17).length
+      pairs += Math.floor(blackCount / 2) + Math.floor(redCount / 2)
+      singles += (blackCount % 2) + (redCount % 2)
+      continue
+    }
+
+    if (group.kind === 'wild') {
+      wilds += group.cards.length
     }
   }
 
-  // Count triples (full houses use 5 cards in 1 move)
-  const triples: number[] = []
-  const pairs: number[] = []
-  const singles: number[] = []
+  const naturalFullHouses = Math.min(triples, pairs)
+  fixedMoves += naturalFullHouses
+  triples -= naturalFullHouses
+  pairs -= naturalFullHouses
 
-  for (const [rank, cards] of analysis.naturalByRank) {
-    if (cards.length >= 4) continue // already counted as bomb
-    if (cards.length === 3) triples.push(rank)
-    else if (cards.length === 2) pairs.push(rank)
-    else if (cards.length === 1) singles.push(rank)
-  }
+  const pairBackedFullHouses = Math.min(wilds, Math.floor(pairs / 2))
+  fixedMoves += pairBackedFullHouses
+  pairs -= pairBackedFullHouses * 2
+  wilds -= pairBackedFullHouses
 
-  // Pair triples with pairs for full houses
-  const fullHouses = Math.min(triples.length, pairs.length)
-  moves += fullHouses
-  remaining -= fullHouses * 5
-  const leftoverTriples = triples.length - fullHouses
-  moves += leftoverTriples
-  remaining -= leftoverTriples * 3
-  const leftoverPairs = pairs.length - fullHouses
-  moves += leftoverPairs
-  remaining -= leftoverPairs * 2
-  // Remaining singles + wilds
-  moves += Math.max(0, remaining)
+  const tripleSingleFullHouses = Math.min(wilds, Math.min(triples, singles))
+  fixedMoves += tripleSingleFullHouses
+  triples -= tripleSingleFullHouses
+  singles -= tripleSingleFullHouses
+  wilds -= tripleSingleFullHouses
 
-  return moves
+  const tripleWildFullHouses = Math.min(triples, Math.floor(wilds / 2))
+  fixedMoves += tripleWildFullHouses
+  triples -= tripleWildFullHouses
+  wilds -= tripleWildFullHouses * 2
+
+  const leftoverGroups = triples + pairs + singles
+  const wildAttachments = Math.min(wilds, leftoverGroups)
+
+  return fixedMoves + leftoverGroups + wilds - wildAttachments
 }
 
-function comboPreservationPenalty(play: PatternPlay, hand: Card[], levelRank: number) {
+export function comboPreservationPenalty(play: PatternPlay, hand: Card[], levelRank: number) {
   const analysis = analyzeHand(hand, levelRank)
   const naturalUsage = new Map<number, number>()
 
@@ -1155,6 +1182,31 @@ function isComplexPattern(play: PatternPlay) {
   return play.type === 'straight' || play.type === 'tube' || play.type === 'plate' || play.type === 'fullHouse'
 }
 
+function isControlCandidate(play: PatternPlay) {
+  if (isBombPattern(play)) {
+    return true
+  }
+
+  if (play.type === 'single') {
+    return play.primaryValue >= 14
+  }
+
+  if (play.type === 'pair') {
+    return play.primaryValue >= 13
+  }
+
+  if (play.type === 'triple' || play.type === 'fullHouse') {
+    return play.primaryValue >= 12
+  }
+
+  return false
+}
+
+function leavesNoControlAfterPlay(play: PatternPlay, hand: Card[], levelRank: number) {
+  const afterHand = hand.filter((card) => !play.cards.some((used) => used.id === card.id))
+  return !enumerateLeadPatterns(afterHand, levelRank).some((candidate) => isControlCandidate(candidate))
+}
+
 export function shouldKeepCandidate(play: PatternPlay, hand: Card[], levelRank: number, urgent: boolean) {
   if (play.cards.length === hand.length) {
     return true
@@ -1191,14 +1243,26 @@ function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
   const afterHand = hand.filter((c) => !play.cards.some((p) => p.id === c.id))
   const afterMoves = estimateHandCount(afterHand, levelRank)
   const currentMoves = estimateHandCount(hand, levelRank)
+  const tempoGain = currentMoves - afterMoves
 
   let score = comboPreservationPenalty(play, hand, levelRank)
 
   // Prefer plays that reduce move count efficiently
-  score += (currentMoves - afterMoves) * -30
+  score += tempoGain * -30
+  if (tempoGain >= 2) {
+    score -= tempoGain * 14
+  }
 
   // Prefer small-value leads to keep big cards for control
   score += play.primaryValue * 1.5
+
+  if (handSize >= 12 && isControlCandidate(play)) {
+    score += 24
+  }
+
+  if (handSize >= 10 && isControlCandidate(play) && leavesNoControlAfterPlay(play, hand, levelRank)) {
+    score += 18
+  }
 
   // Penalize using wilds (save them)
   score += play.wildCount * 12
@@ -1217,9 +1281,15 @@ function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
   // Penalize breaking combos (straights, tubes, plates)
   if (play.type === 'straight' || play.type === 'tube' || play.type === 'plate') {
     score += handSize > 10 ? 10 : -4
+    if (tempoGain >= 2) {
+      score -= 18
+    }
   }
   if (play.type === 'fullHouse') {
     score += handSize > 10 ? 8 : -2
+    if (tempoGain >= 2) {
+      score -= 14
+    }
   }
 
   // Strongly preserve bombs for later
@@ -1247,6 +1317,7 @@ function scoreResponse(
   enemyDanger: boolean,
   partnerClose: boolean,
   teammateAhead: boolean,
+  enemyPressure: boolean,
 ) {
   const handSize = hand.length
   // Instant-win
@@ -1269,14 +1340,20 @@ function scoreResponse(
       score += 15 // worth it when enemy is close to finishing
     } else if (partnerClose) {
       score += 10 // help partner
+    } else if (enemyPressure) {
+      score += 22
     } else {
-      score += 60 // expensive otherwise
+      score += 72 // expensive otherwise
     }
   }
 
   // Prefer the minimum card to beat
   const overshoot = play.primaryValue - current.primaryValue
-  score += overshoot * 0.5
+  score += overshoot * (isBombPattern(play) ? 0.5 : 2.2)
+
+  if (!enemyDanger && !enemyPressure && isControlCandidate(play)) {
+    score += 16
+  }
 
   // If partner is close to finishing, be more aggressive about getting control
   if (partnerClose && !teammateAhead) {
@@ -1288,7 +1365,7 @@ function scoreResponse(
   const movesBefore = estimateHandCount(hand, levelRank)
   const movesAfter = estimateHandCount(afterHand, levelRank)
   if (movesAfter < movesBefore) {
-    score -= (movesBefore - movesAfter) * 5
+    score -= (movesBefore - movesAfter) * 7
   }
 
   return score
@@ -1299,6 +1376,7 @@ export function chooseLeadPlay(
   levelRank: number,
   actor: Seat,
   remainingCounts: Record<Seat, number>,
+  context?: StrategyContext,
 ) {
   const rawCandidates = enumerateLeadPatterns(hand, levelRank)
   const candidates = rawCandidates.filter((play) => shouldKeepCandidate(play, hand, levelRank, false))
@@ -1322,6 +1400,25 @@ export function chooseLeadPlay(
     if (smallPairs.length > 0) {
       return smallPairs[0]
     }
+  }
+
+  const currentMoves = estimateHandCount(hand, levelRank)
+  const enemyPressure = (context?.enemyWinningStreak ?? 0) >= 2 || (context?.enemyComboPressure ?? 0) >= 2
+
+  const strongTempoOpeners = candidates.filter((play) => {
+    if (isBombPattern(play)) {
+      return false
+    }
+
+    const afterHand = hand.filter((card) => !play.cards.some((used) => used.id === card.id))
+    const tempoGain = currentMoves - estimateHandCount(afterHand, levelRank)
+    return tempoGain >= 2 && comboPreservationPenalty(play, hand, levelRank) <= (enemyPressure ? 26 : 20)
+  })
+
+  if (strongTempoOpeners.length > 0) {
+    return strongTempoOpeners.toSorted(
+      (left, right) => scoreLead(left, hand, levelRank) - scoreLead(right, hand, levelRank),
+    )[0]
   }
 
   if (hand.length >= 18) {
@@ -1349,8 +1446,10 @@ export function chooseResponsePlay(
   actor: Seat,
   winningSeat: Seat,
   remainingCounts: Record<Seat, number>,
+  context?: StrategyContext,
 ) {
-  const urgent = remainingCounts[winningSeat] <= 5 || remainingCounts[partnerOf(actor)] <= 3 || hand.length <= 6
+  const enemyPressure = (context?.enemyWinningStreak ?? 0) >= 2 || (context?.enemyComboPressure ?? 0) >= 2
+  const urgent = remainingCounts[winningSeat] <= 5 || remainingCounts[partnerOf(actor)] <= 3 || hand.length <= 6 || enemyPressure
   const candidates = enumerateLeadPatterns(hand, levelRank)
     .filter((pattern) => canBeat(pattern, current))
     .filter((play) => shouldKeepCandidate(play, hand, levelRank, urgent))
@@ -1361,12 +1460,13 @@ export function chooseResponsePlay(
   const teammateAhead = partnerOf(actor) === winningSeat
   const enemyDanger = remainingCounts[winningSeat] <= 5
   const partnerClose = remainingCounts[partnerOf(actor)] <= 3
+  const mustContestControl = enemyDanger || enemyPressure
 
   const sameTypeCandidates = candidates.filter((pattern) => !isBombPattern(pattern))
   const bombCandidates = candidates.filter((pattern) => isBombPattern(pattern))
 
   const scoreCandidate = (play: PatternPlay) =>
-    scoreResponse(play, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead)
+    scoreResponse(play, current, hand, levelRank, enemyDanger, partnerClose, teammateAhead, enemyPressure)
 
   const chooseBest = (plays: PatternPlay[]) =>
     plays
@@ -1390,18 +1490,22 @@ export function chooseResponsePlay(
     }
 
     // Always play if: enemy is dangerous, we're close to finishing, or cost is low
-    if (enemyDanger || partnerClose || hand.length <= 8 || bestSameType.play.cards.length >= 5) {
+    if (mustContestControl || partnerClose || hand.length <= 8 || bestSameType.play.cards.length >= 5) {
       return bestSameType.play
     }
 
     // Play if the overshoot is small (don't waste big cards)
-    if (bestSameType.play.primaryValue - current.primaryValue <= 2 && bestSameType.score <= 34) {
+    if (bestSameType.play.primaryValue - current.primaryValue <= 1 && bestSameType.score <= 42) {
       return bestSameType.play
     }
 
     // If hand count improves, worth it
-    if (playImprovesTempo(bestSameType.play, hand, levelRank) && bestSameType.score <= 40) {
+    if (playImprovesTempo(bestSameType.play, hand, levelRank) && bestSameType.score <= 46) {
       return bestSameType.play
+    }
+
+    if (!mustContestControl && isControlCandidate(bestSameType.play) && !playImprovesTempo(bestSameType.play, hand, levelRank)) {
+      return null
     }
 
     if (bestSameType.score <= 18) {
@@ -1416,7 +1520,7 @@ export function chooseResponsePlay(
       return null
     }
 
-    if (enemyDanger || partnerClose || hand.length <= 6 || bestBomb.play.cards.length === hand.length) {
+    if (mustContestControl || partnerClose || hand.length <= 6 || bestBomb.play.cards.length === hand.length) {
       return bestBomb.play
     }
 
@@ -1625,7 +1729,13 @@ export function generateGame(seed = Date.now()) {
         north: hands.north.length,
         west: hands.west.length,
       }
-      const leadPlay = chooseLeadPlay(hands[currentSeat], levelRank, currentSeat, remainingCounts)
+      const leadPlay = chooseLeadPlay(
+        hands[currentSeat],
+        levelRank,
+        currentSeat,
+        remainingCounts,
+        buildStrategyContext(currentSeat, actions, tricks),
+      )
       if (!leadPlay) {
         break
       }
@@ -1653,6 +1763,7 @@ export function generateGame(seed = Date.now()) {
       currentSeat,
       trickState.lastWinningSeat,
       buildRemainingCounts(hands),
+      buildStrategyContext(currentSeat, actions, tricks),
     )
 
     if (responsePlay) {

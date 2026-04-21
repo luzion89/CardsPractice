@@ -28,6 +28,7 @@ import {
   SEATS,
   shouldKeepCandidate,
 } from './engine'
+import { buildStrategyContext } from './strategyCore'
 import { cardToCode, resolveCardsFromCodes } from './cardCode'
 import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult, type AILegalActionOption } from './aiService'
 
@@ -359,9 +360,14 @@ export class GameManager {
     currentPlay: PatternPlay | null,
     remainingCounts: Record<Seat, number>,
   ) {
+    const strategyContext = buildStrategyContext(seat, this.actions, this.tricks)
     const currentWinningSeat = this.trickState?.lastWinningSeat ?? null
     const urgent = currentPlay && currentWinningSeat
-      ? remainingCounts[currentWinningSeat] <= 5 || remainingCounts[partnerOf(seat)] <= 3 || hand.length <= 6
+      ? remainingCounts[currentWinningSeat] <= 5
+        || remainingCounts[partnerOf(seat)] <= 3
+        || hand.length <= 6
+        || strategyContext.enemyWinningStreak >= 2
+        || strategyContext.enemyComboPressure >= 2
       : false
 
     const allPatterns = enumerateLeadPatterns(hand, this.levelRank)
@@ -370,9 +376,9 @@ export class GameManager {
     let candidatePatterns = allPatterns.filter((pattern) => shouldKeepCandidate(pattern, hand, this.levelRank, urgent))
 
     const preferredPattern = !currentPlay
-      ? chooseLeadPlay(hand, this.levelRank, seat, remainingCounts) ?? null
+      ? chooseLeadPlay(hand, this.levelRank, seat, remainingCounts, strategyContext) ?? null
       : currentWinningSeat
-        ? chooseResponsePlay(hand, this.levelRank, currentPlay, seat, currentWinningSeat, remainingCounts)
+        ? chooseResponsePlay(hand, this.levelRank, currentPlay, seat, currentWinningSeat, remainingCounts, strategyContext)
         : null
 
     if (currentPlay && currentWinningSeat && partnerOf(seat) === currentWinningSeat && !preferredPattern) {

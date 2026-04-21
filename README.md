@@ -28,6 +28,7 @@
 - 级牌信息固定显示在牌桌左上角；本家 AI 出牌理由仅在本家出牌后显示于手牌栏
 - 设置中新增调试模式；开启后可查看四家最近一次可见 AI 出牌理由，方便排查 prompt 与座位理解
 - AI 设置区支持“检测连通性”按钮（校验 API Key 与模型可达性）
+- 本地策略研发已新增“手数估计 + 连续控场压力 + 结构化模拟诊断”骨架，用于把出牌逻辑单独迭代到更稳定的水平
 - 本地持久化当前局面与训练数据
 - manifest + service worker 构成可安装 PWA
 - 增强版简约像素风：更高可读性字号、复古网格背景、块状控件与绿色牌桌界面，响应式适配不同屏幕
@@ -99,6 +100,8 @@ npm run check:update
 - `npm run check:update`：执行项目 post-update 自动检查（test + build + lint）
 
 完整测试策略与每次改动后必须执行的 checklist 见 [docs/post-update-checklist.md](docs/post-update-checklist.md)。
+
+本地策略优先级、公开资料提炼结果、20 局模拟闭环以及书籍内容的推荐输入格式见 [docs/guandan-strategy-plan.md](docs/guandan-strategy-plan.md)。
 
 ## GitHub Actions 部署
 
