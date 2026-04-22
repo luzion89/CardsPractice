@@ -1,8 +1,9 @@
 # 掼蛋记牌实验室
 
-一个面向掼蛋记牌训练的 PWA 应用。支持两种模式：
+一个面向掼蛋记牌训练的 PWA 应用。支持三种模式：
 
 - **AI 实时对局模式**：通过 OpenRouter API 驱动四个独立 AI 代理逐手出牌，生成更接近真人风格的牌谱。
+- **本地策略对局模式**：由本地策略会话逐手决策，实时推进完整牌局，方便直接在 app 里验证策略效果。
 - **本地预生成模式**：使用启发式引擎一次性生成完整合法牌局。
 
 用户通过逐手回放和按轮检索 challenge 训练以下能力：
@@ -28,7 +29,10 @@
 - 级牌信息固定显示在牌桌左上角；本家 AI 出牌理由仅在本家出牌后显示于手牌栏
 - 设置中新增调试模式；开启后可查看四家最近一次可见 AI 出牌理由，方便排查 prompt 与座位理解
 - AI 设置区支持“检测连通性”按钮（校验 API Key 与模型可达性）
-- 本地策略研发已新增“手数估计 + 连续控场压力 + 结构化模拟诊断”骨架，用于把出牌逻辑单独迭代到更稳定的水平
+- 本地策略模式已接入 GameManager，可像 AI 模式一样逐手推进，并在本家与调试监视器中显示结构化策略理由
+- 本地策略规则已整理成结构化策略文件，便于后续人工修改与持续迭代
+- 本地策略研发已新增“手数估计 + 连续控场压力 + 结构化模拟诊断”闭环，审计报告会保存到本地忽略目录 `debug/strategy-audits/`
+- 已补充“人工构造牌局”场景测试，用固定手牌验证不过冲、不抢搭档、不过早交控制牌等策略约束
 - 本地持久化当前局面与训练数据
 - manifest + service worker 构成可安装 PWA
 - 增强版简约像素风：更高可读性字号、复古网格背景、块状控件与绿色牌桌界面，响应式适配不同屏幕
@@ -91,12 +95,16 @@ npm run test
 npm run dev
 npm run build
 npm run lint
+npm run audit:strategy
+npm run audit:strategy:quick
 npm run check:update
 ```
 
 其中：
 
 - `npm run test`：运行逻辑单元测试
+- `npm run audit:strategy`：运行 60 局本地策略结构化审计，并写入 `debug/strategy-audits/latest.json`
+- `npm run audit:strategy:quick`：运行较小样本的快速策略审计
 - `npm run check:update`：执行项目 post-update 自动检查（test + build + lint）
 
 完整测试策略与每次改动后必须执行的 checklist 见 [docs/post-update-checklist.md](docs/post-update-checklist.md)。

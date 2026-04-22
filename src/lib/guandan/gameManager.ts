@@ -29,6 +29,7 @@ import {
   shouldKeepCandidate,
 } from './engine'
 import { buildStrategyContext } from './strategyCore'
+import { LocalStrategySession } from './strategySession'
 import { cardToCode, resolveCardsFromCodes } from './cardCode'
 import { AIPlayerSession, AIRequestError, type AIConfig, type AIPlayResult, type AILegalActionOption } from './aiService'
 
@@ -42,6 +43,18 @@ interface MutableTrickState {
   actionIndexes: number[]
   lastWinningSeat: Seat
   lastWinningPlay: PatternPlay
+}
+
+interface PlayerDecisionSession {
+  requestPlay(
+    hand: Card[],
+    actions: ReplayAction[],
+    currentPlay: PatternPlay | null,
+    isLeading: boolean,
+    remainingCounts: Record<Seat, number>,
+    legalActions?: AILegalActionOption[],
+    signal?: AbortSignal,
+  ): Promise<AIPlayResult>
 }
 
 /* ------------------------------------------------------------------ */
@@ -253,6 +266,7 @@ type ResolvedAILegalAction = {
 /* ------------------------------------------------------------------ */
 
 export type GamePhase = 'waiting' | 'playing' | 'thinking' | 'finished'
+export type DecisionMode = 'ai' | 'strategy'
 
 export interface GameManagerState {
   game: GuandanGame
@@ -281,10 +295,12 @@ export class GameManager {
   private lastAIReason = ''
 
   /* AI sessions */
-  private aiSessions: Record<Seat, AIPlayerSession>
+  private aiSessions: Record<Seat, PlayerDecisionSession>
   private abortController: AbortController | null = null
+  private decisionMode: DecisionMode
 
-  constructor(config: AIConfig, seed = Date.now()) {
+  constructor(config: AIConfig | null, seed = Date.now(), options?: { mode?: DecisionMode }) {
+    this.decisionMode = options?.mode ?? 'ai'
     this.seed = seed
     const rng = createSeededRng(seed)
     this.levelRank = FACE_RANKS[randomInt(rng, FACE_RANKS.length)]
@@ -302,12 +318,24 @@ export class GameManager {
     this.currentSeat = this.startingSeat
     this.phase = 'playing'
 
-    // Create independent AI sessions for each player
-    this.aiSessions = {
-      south: new AIPlayerSession(config, 'south', this.levelRank),
-      east: new AIPlayerSession(config, 'east', this.levelRank),
-      north: new AIPlayerSession(config, 'north', this.levelRank),
-      west: new AIPlayerSession(config, 'west', this.levelRank),
+    if (this.decisionMode === 'ai') {
+      if (!config) {
+        throw new Error('AI 模式缺少有效配置')
+      }
+
+      this.aiSessions = {
+        south: new AIPlayerSession(config, 'south', this.levelRank),
+        east: new AIPlayerSession(config, 'east', this.levelRank),
+        north: new AIPlayerSession(config, 'north', this.levelRank),
+        west: new AIPlayerSession(config, 'west', this.levelRank),
+      }
+    } else {
+      this.aiSessions = {
+        south: new LocalStrategySession('south', this.levelRank),
+        east: new LocalStrategySession('east', this.levelRank),
+        north: new LocalStrategySession('north', this.levelRank),
+        west: new LocalStrategySession('west', this.levelRank),
+      }
     }
   }
 
@@ -477,7 +505,7 @@ export class GameManager {
       )
     } catch (err) {
       this.phase = 'playing'
-      if (err instanceof AIRequestError && err.kind === 'response-format') {
+      if (this.decisionMode === 'ai' && err instanceof AIRequestError && err.kind === 'response-format') {
         return this.applyFallbackDecision(seat, hand, currentPlay, summarizeResponseFormatError(err.message))
       }
       throw err

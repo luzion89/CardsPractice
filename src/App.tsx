@@ -37,6 +37,8 @@ type TrainingStats = {
   bestStreak: number
 }
 
+type GameMode = 'ai' | 'strategy' | 'local'
+
 type ActiveChallenge = {
   trickIndex: number
   question: ChallengeQuestion
@@ -49,6 +51,7 @@ type PersistedState = {
   stats: TrainingStats
   aiConfig: AIConfig | null
   debugMode: boolean
+  gameMode?: GameMode
 }
 
 type OpeningGuideState = {
@@ -120,6 +123,17 @@ function challengeTagLabel(tag: string) {
 function buildLocalOpeningGuide(cards: Card[], levelRank: number): OpeningGuideState {
   return {
     items: buildOpeningGuideItems(cards, levelRank),
+  }
+}
+
+function gameModeLabel(mode: GameMode) {
+  switch (mode) {
+    case 'ai':
+      return 'AI实时对局'
+    case 'strategy':
+      return '策略实时对局'
+    case 'local':
+      return '本地预生成回放'
   }
 }
 
@@ -269,7 +283,9 @@ function App() {
   const [aiConnectionMessage, setAiConnectionMessage] = useState('')
 
   /* ---- Game mode: 'ai' (live AI) or 'local' (pre-generated) ---- */
-  const [gameMode, setGameMode] = useState<'ai' | 'local'>(() => (persisted?.aiConfig?.apiKey ? 'ai' : 'local'))
+  const [gameMode, setGameMode] = useState<GameMode>(() => persisted?.gameMode ?? (persisted?.aiConfig?.apiKey ? 'ai' : 'local'))
+
+  const isManagedMode = gameMode === 'ai' || gameMode === 'strategy'
 
   /* ---- Refs ---- */
   const managerRef = useRef<GameManager | null>(null)
@@ -282,14 +298,14 @@ function App() {
     [game, stepIndex],
   )
   const progress =
-    !game || gameMode === 'ai'
+    !game || isManagedMode
       ? null
       : game.actions.length > 0
         ? Math.round((stepIndex / game.actions.length) * 100)
         : 0
   const accuracy = stats.attempted === 0 ? 0 : Math.round((stats.correct / stats.attempted) * 100)
   const isGameOver =
-    !game || (gameMode === 'ai' ? aiPhase === 'finished' : (snapshot?.isComplete ?? false))
+    !game || (isManagedMode ? aiPhase === 'finished' : (snapshot?.isComplete ?? false))
   const actingSeat = aiThinking ? thinkingSeat : snapshot?.nextSeat ?? null
   const ownHand = useMemo(
     () => (game && snapshot ? remainingHandForSeat(game, snapshot, SELF_SEAT) : []),
@@ -320,8 +336,8 @@ function App() {
   )
 
   useEffect(() => {
-    debouncedPersist({ difficulty, stats, aiConfig, debugMode })
-  }, [debouncedPersist, difficulty, stats, aiConfig, debugMode])
+    debouncedPersist({ difficulty, stats, aiConfig, debugMode, gameMode })
+  }, [debouncedPersist, difficulty, stats, aiConfig, debugMode, gameMode])
 
   const prepareOpeningGuide = useCallback((initialHand: Card[], levelRank: number) => {
     setOpeningGuide(buildLocalOpeningGuide(initialHand, levelRank))
@@ -395,11 +411,13 @@ function App() {
 
   /* ---- Game actions ---- */
 
-  function startNewGame(options?: { mode?: 'ai' | 'local'; config?: AIConfig | null }) {
+  function startNewGame(options?: { mode?: GameMode; config?: AIConfig | null }) {
     const resolvedMode = options?.mode ?? gameMode
     const resolvedConfig = options?.config ?? aiConfig
+    const gameSeed = Date.now() + Math.floor(Math.random() * 1000)
 
     managerRef.current?.abort()
+    setGameMode(resolvedMode)
     setError(null)
     setActiveChallenge(null)
     setChallengedTrickIndexes([])
@@ -407,10 +425,21 @@ function App() {
     setOpeningGuide(null)
     setAiThinking(false)
     setThinkingSeat(null)
-    setAiPhase(resolvedMode === 'ai' ? 'playing' : 'waiting')
+    setAiPhase(resolvedMode === 'local' ? 'waiting' : 'playing')
 
     if (resolvedMode === 'ai' && resolvedConfig?.apiKey) {
-      const mgr = new GameManager(resolvedConfig)
+      const mgr = new GameManager(resolvedConfig, gameSeed, { mode: 'ai' })
+      managerRef.current = mgr
+      const state = mgr.getState()
+      setAiPhase(state.phase)
+      setGame(state.game)
+      setStepIndex(0)
+      setModal('none')
+      if (difficulty === 'starter') {
+        prepareOpeningGuide(state.game.players[SELF_SEAT], state.game.levelRank)
+      }
+    } else if (resolvedMode === 'strategy') {
+      const mgr = new GameManager(null, gameSeed, { mode: 'strategy' })
       managerRef.current = mgr
       const state = mgr.getState()
       setAiPhase(state.phase)
@@ -423,7 +452,7 @@ function App() {
     } else {
       // Local fallback mode
       managerRef.current = null
-      const g = generateGame(Date.now() + Math.floor(Math.random() * 1000))
+      const g = generateGame(gameSeed)
       setGame(g)
       setStepIndex(0)
       setModal('none')
@@ -432,6 +461,7 @@ function App() {
       }
 
       if (resolvedMode === 'ai') {
+        setGameMode('local')
         setError('未检测到可用 AI 配置，已切换为本地模式。')
       }
     }
@@ -443,7 +473,7 @@ function App() {
     nextStepLockRef.current = true
 
     try {
-      if (managerRef.current && gameMode === 'ai') {
+      if (managerRef.current && isManagedMode) {
         const mgr = managerRef.current
 
         // If user stepped backward, reveal already-generated actions first.
@@ -583,7 +613,7 @@ function App() {
   function handleContinueAfterChallenge() {
     if (!activeChallenge || activeChallenge.selectedIndex === null) return
     setActiveChallenge(null)
-    if (game && (gameMode === 'ai' ? aiPhase === 'finished' && stepIndex >= game.actions.length : stepIndex >= game.actions.length)) {
+    if (game && (isManagedMode ? aiPhase === 'finished' && stepIndex >= game.actions.length : stepIndex >= game.actions.length)) {
       setModal('result')
     }
   }
@@ -600,7 +630,9 @@ function App() {
     }
 
     setAiConfig(config)
-    setGameMode('ai')
+    if (gameMode === 'local') {
+      setGameMode('ai')
+    }
     setAiPhase('playing')
     setAiConnectionStatus('idle')
     setAiConnectionMessage(`已保存 AI 设置：${config.model}`)
@@ -626,7 +658,7 @@ function App() {
         .map(([s]) => s)
     : []
   const ownVisiblePlayReason =
-    gameMode === 'ai' && snapshot?.lastAction?.seat === SELF_SEAT && snapshot.lastAction.play
+    isManagedMode && snapshot?.lastAction?.seat === SELF_SEAT && snapshot.lastAction.play
       ? aiReasons[snapshot.lastAction.index] ?? ''
       : ''
 
@@ -638,8 +670,8 @@ function App() {
         ? '点击"新牌局"开始游戏。'
         : snapshot?.lastAction
           ? `${SEAT_LABELS[snapshot.lastAction.seat]} · ${snapshot.lastAction.note}`
-          : gameMode === 'ai'
-            ? '牌局已开始，点击"下一步"让AI出牌。'
+          : isManagedMode
+            ? `牌局已开始，点击"下一步"让${gameMode === 'ai' ? 'AI' : '本地策略'}出牌。`
             : '整局牌谱已预生成，按"下一步"开始回放。'
 
   /* ---- Landing screen (no game) ---- */
@@ -649,7 +681,7 @@ function App() {
         <div className="landing-card">
           <div className="landing-icon">🃏</div>
           <h1 className="landing-title">掼蛋记牌训练</h1>
-          <p className="landing-sub">AI驱动的掼蛋牌局回放 · 记牌挑战训练</p>
+          <p className="landing-sub">AI实时对局 · 本地策略对局 · 预生成回放</p>
 
           <div className="landing-config">
             <label className="config-label">
@@ -675,6 +707,16 @@ function App() {
             <div className="landing-actions">
               <button
                 type="button"
+                className="ctrl-btn accent"
+                onClick={() => {
+                  setGameMode('strategy')
+                  startNewGame({ mode: 'strategy', config: null })
+                }}
+              >
+                开始策略对局
+              </button>
+              <button
+                type="button"
                 className="ctrl-btn"
                 onClick={handleTestAIConnection}
                 disabled={aiConnectionStatus === 'testing'}
@@ -684,20 +726,28 @@ function App() {
               <button
                 type="button"
                 className="ctrl-btn primary"
+                disabled={!apiKeyInput.trim()}
                 onClick={() => {
                   const config = buildAIConfigFromInputs()
                   if (config) {
                     setAiConfig(config)
                     setGameMode('ai')
                     startNewGame({ mode: 'ai', config })
-                  } else {
-                    setAiConfig(null)
-                    setGameMode('local')
-                    startNewGame({ mode: 'local', config: null })
                   }
                 }}
               >
-                {apiKeyInput.trim() ? '开始AI对局' : '本地模式开始'}
+                开始AI对局
+              </button>
+              <button
+                type="button"
+                className="ctrl-btn"
+                onClick={() => {
+                  setAiConfig(buildAIConfigFromInputs())
+                  setGameMode('local')
+                  startNewGame({ mode: 'local', config: null })
+                }}
+              >
+                开始本地回放
               </button>
             </div>
             {aiConnectionMessage && (
@@ -705,8 +755,8 @@ function App() {
             )}
             <p className="landing-hint">
               {apiKeyInput.trim()
-                ? '将使用OpenRouter AI驱动四家出牌'
-                : '无API Key将使用本地预生成牌局（离线可用）'}
+                ? '可选择 AI 实时对局，或直接进入本地策略对局 / 本地回放。'
+                : '未填写 API Key 时，仍可使用本地策略对局和本地预生成回放。'}
             </p>
           </div>
         </div>
@@ -740,6 +790,7 @@ function App() {
               <span className="tag">{roundLabel}</span>
               <span className="tag diff-tag">{DIFFICULTY_META[difficulty].label}</span>
               {gameMode === 'ai' && <span className="tag ai-tag">AI</span>}
+              {gameMode === 'strategy' && <span className="tag strategy-tag">策略</span>}
               {debugMode && <span className="tag debug-tag">调试</span>}
               {typeof progress === 'number' && progress > 0 && <span className="tag">{progress}%</span>}
             </div>
@@ -826,7 +877,7 @@ function App() {
         <div className="hand-head">
           <div className="hand-title-group">
             <h3>手牌</h3>
-            {ownVisiblePlayReason && <p className="hand-ai-reason">本家 AI 理由：{ownVisiblePlayReason}</p>}
+            {ownVisiblePlayReason && <p className="hand-ai-reason">本家{gameMode === 'ai' ? ' AI ' : '策略'}理由：{ownVisiblePlayReason}</p>}
           </div>
           <span className="hand-count">{ownHand.length} / {game.players[SELF_SEAT].length}</span>
         </div>
@@ -837,16 +888,16 @@ function App() {
         )}
       </section>
 
-      {debugMode && gameMode === 'ai' && (
+      {debugMode && isManagedMode && (
         <section className="debug-panel">
           <div className="debug-head">
             <strong>调试监视器</strong>
-            <span>显示四家最近一次可见 AI 理由</span>
+            <span>显示四家最近一次可见{gameMode === 'ai' ? ' AI ' : ' 策略 '}理由</span>
           </div>
           <div className="debug-grid">
             {TABLE_SEATS.map((seat) => {
               const action = latestVisibleActionBySeat[seat] ?? null
-              const reason = action ? aiReasons[action.index] || '该步未记录理由。' : '尚未看到该座位的 AI 动作。'
+              const reason = action ? aiReasons[action.index] || '该步未记录理由。' : `尚未看到该座位的${gameMode === 'ai' ? 'AI' : '策略'}动作。`
               return (
                 <article key={`debug-${seat}`} className="debug-card">
                   <div className="debug-card-head">
@@ -956,8 +1007,27 @@ function App() {
                 <p className={`conn-status ${aiConnectionStatus}`}>{aiConnectionMessage}</p>
               )}
               <p className="settings-hint">
-                {aiConfig?.apiKey ? `当前模式: AI (${aiConfig.model})` : '当前模式: 本地离线'}
+                当前模式: {gameModeLabel(gameMode)}
+                {gameMode === 'ai' ? ` (${aiConfig?.model ?? DEFAULT_AI_CONFIG.model})` : ''}
               </p>
+            </div>
+
+            <div className="dialog-section">
+              <h4>对局模式</h4>
+              <div className="diff-list">
+                <button type="button" className={`diff-item ${gameMode === 'strategy' ? 'active' : ''}`} onClick={() => startNewGame({ mode: 'strategy', config: null })}>
+                  <strong>策略实时对局</strong>
+                  <small>每点一次“下一步”，由本地策略实时决策一手。</small>
+                </button>
+                <button type="button" className={`diff-item ${gameMode === 'ai' ? 'active' : ''}`} onClick={() => startNewGame({ mode: 'ai', config: aiConfig })}>
+                  <strong>AI实时对局</strong>
+                  <small>使用 OpenRouter 驱动四家逐手出牌。</small>
+                </button>
+                <button type="button" className={`diff-item ${gameMode === 'local' ? 'active' : ''}`} onClick={() => startNewGame({ mode: 'local', config: null })}>
+                  <strong>本地预生成回放</strong>
+                  <small>一次性生成完整牌局，再按步回放。</small>
+                </button>
+              </div>
             </div>
 
             <div className="dialog-section">
@@ -984,7 +1054,7 @@ function App() {
                 <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} />
               </label>
               <p className="settings-hint">
-                开启后会显示四家最近一次可见 AI 理由，便于排查 prompt 和出牌决策。
+                开启后会显示四家最近一次可见的 AI / 策略理由，便于排查决策。
               </p>
             </div>
 
@@ -1019,7 +1089,7 @@ function App() {
                       <span className="action-who">{SEAT_LABELS[action.seat]}</span>
                       <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
                       <span className="action-rem">余{action.handCountAfter}</span>
-                      {debugMode && gameMode === 'ai' && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
+                      {debugMode && isManagedMode && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
                     </div>
                   ))}
                 </div>
@@ -1039,7 +1109,7 @@ function App() {
                         <div key={action.index} className="action-item">
                           <span className="action-who">{SEAT_LABELS[action.seat]}</span>
                           <PlayDisplay play={action.play} levelRank={game.levelRank} size="xs" />
-                          {debugMode && gameMode === 'ai' && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
+                          {debugMode && isManagedMode && aiReasons[action.index] && <span className="action-reason">{aiReasons[action.index]}</span>}
                         </div>
                       ))}
                     </div>
@@ -1098,7 +1168,7 @@ function App() {
               <h4>本局信息</h4>
               <p className="meta-text">
                 级牌 {rankToText(game.levelRank)} · {SEAT_LABELS[game.startingSeat]}起手 · {game.actions.length}步 · {game.tricks.length}轮
-                {gameMode === 'ai' ? ' · AI驱动' : ' · 本地模式'}
+                {gameMode === 'ai' ? ' · AI实时对局' : gameMode === 'strategy' ? ' · 策略实时对局' : ' · 本地预生成回放'}
               </p>
             </div>
             <button type="button" className="ctrl-btn accent full" onClick={() => startNewGame()}>开始新牌局</button>

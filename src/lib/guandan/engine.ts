@@ -1264,6 +1264,22 @@ function scoreLead(play: PatternPlay, hand: Card[], levelRank: number) {
     score += 18
   }
 
+  if (handSize >= 8 && play.type === 'single' && play.primaryValue >= 16) {
+    score += 42
+  }
+
+  if (handSize >= 8 && play.type === 'single' && play.primaryValue >= 14) {
+    score += 16
+  }
+
+  if (handSize >= 8 && play.type === 'triple' && play.primaryValue >= 12 && tempoGain < 2) {
+    score += 18
+  }
+
+  if (handSize >= 8 && play.type === 'fullHouse' && play.primaryValue >= 12 && tempoGain < 2) {
+    score += 24
+  }
+
   // Penalize using wilds (save them)
   score += play.wildCount * 12
 
@@ -1489,28 +1505,43 @@ export function chooseResponsePlay(
       return null
     }
 
+    const overshoot = bestSameType.play.primaryValue - current.primaryValue
+    const improvesTempo = playImprovesTempo(bestSameType.play, hand, levelRank)
+    const isWideOvershoot = overshoot >= 3 || (isControlCandidate(bestSameType.play) && overshoot >= 2)
+    const isSimpleResponse = current.type === 'single' || current.type === 'pair' || current.type === 'triple'
+
     // Always play if: enemy is dangerous, we're close to finishing, or cost is low
-    if (mustContestControl || partnerClose || hand.length <= 8 || bestSameType.play.cards.length >= 5) {
+    if (mustContestControl || partnerClose || hand.length <= 3 || (bestSameType.play.cards.length >= 5 && improvesTempo)) {
       return bestSameType.play
     }
 
+    if (!mustContestControl && !partnerClose && isSimpleResponse && overshoot >= 4 && hand.length > 2) {
+      return null
+    }
+
+    if (!mustContestControl && !partnerClose && isWideOvershoot && !improvesTempo) {
+      return null
+    }
+
     // Play if the overshoot is small (don't waste big cards)
-    if (bestSameType.play.primaryValue - current.primaryValue <= 1 && bestSameType.score <= 42) {
+    if (overshoot <= 1 && bestSameType.score <= 42) {
       return bestSameType.play
     }
 
     // If hand count improves, worth it
-    if (playImprovesTempo(bestSameType.play, hand, levelRank) && bestSameType.score <= 46) {
+    if (improvesTempo && bestSameType.score <= 46) {
       return bestSameType.play
     }
 
-    if (!mustContestControl && isControlCandidate(bestSameType.play) && !playImprovesTempo(bestSameType.play, hand, levelRank)) {
+    if (!mustContestControl && isControlCandidate(bestSameType.play) && !improvesTempo) {
       return null
     }
 
     if (bestSameType.score <= 18) {
       return bestSameType.play
     }
+
+    return null
   }
 
   // Try bombs
@@ -1520,11 +1551,15 @@ export function chooseResponsePlay(
       return null
     }
 
-    if (mustContestControl || partnerClose || hand.length <= 6 || bestBomb.play.cards.length === hand.length) {
+    if (mustContestControl || partnerClose || hand.length <= 4 || bestBomb.play.cards.length === hand.length) {
       return bestBomb.play
     }
 
     if (isBombPattern(current) && bestBomb.score <= 56) {
+      return bestBomb.play
+    }
+
+    if (playImprovesTempo(bestBomb.play, hand, levelRank) && bestBomb.score <= 34) {
       return bestBomb.play
     }
   }

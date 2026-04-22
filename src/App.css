@@ -203,6 +203,7 @@
 .tag.level-tag { background: rgba(230, 168, 23, 0.15); color: var(--accent); }
 .tag.diff-tag { background: rgba(52, 152, 219, 0.15); color: var(--blue); }
 .tag.ai-tag { background: rgba(46, 204, 113, 0.15); color: var(--green); }
+.tag.strategy-tag { background: rgba(255, 159, 67, 0.15); color: #ffcf86; }
 .tag.debug-tag { background: rgba(255, 159, 67, 0.16); color: #ffcf86; }
 
 .hud-right {
